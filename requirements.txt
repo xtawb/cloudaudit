@@ -1,0 +1,13 @@
+# CloudAudit v2.0 — Core Dependencies
+aiohttp>=3.9
+aiofiles>=23.0
+python-magic>=0.4.27
+Pillow>=10.0
+cryptography>=41.0
+pyyaml>=6.0
+
+# Optional AI providers — install as needed:
+# pip install google-generativeai    (Gemini)
+# pip install openai                 (OpenAI, DeepSeek, custom endpoints)
+# pip install anthropic              (Claude)
+# Ollama: run locally at https://ollama.ai — no pip install needed
