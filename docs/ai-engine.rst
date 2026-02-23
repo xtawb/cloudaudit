@@ -54,8 +54,8 @@ Google Gemini
 ~~~~~~~~~~~~~
 
 * **Dynamic model discovery**: Calls ``list_models()`` to find supported models before generation
-* **Automatic fallback**: Tries ``gemini-2.0-flash``, ``gemini-1.5-flash``, ``gemini-1.5-flash-8b`` in order
-* **Requirement**: ``pip install google-generativeai``
+* **Automatic fallback**: Automatically discovers compatible Gemini text models dynamically via ``client.models.list()`` and selects the most capable available model.
+* **Requirement**: ``pip install cloudaudit[gemini]``
 
 OpenAI
 ~~~~~~

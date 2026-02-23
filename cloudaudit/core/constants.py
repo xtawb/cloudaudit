@@ -1,6 +1,6 @@
 """cloudaudit — Framework Constants"""
 
-__version__     = "1.0.0"
+__version__     = "1.0.1"
 __tool_name__   = "CloudAudit"
 __author__      = "xtawb"
 __author_url__  = "https://linktr.ee/xtawb"

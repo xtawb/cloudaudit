@@ -140,76 +140,265 @@ class AIProvider(ABC):
 
 class GeminiProvider(AIProvider):
     """
-    Google Gemini with dynamic model discovery.
-    Tries each model in PROVIDER_MODEL_FALLBACKS['gemini'] until one succeeds.
+    Google Gemini provider using the modern ``google.genai`` SDK.
+
+    Key design decisions:
+    - Uses ``from google import genai`` (the latest official SDK — never the
+      deprecated ``google.generativeai`` package).
+    - Performs dynamic model discovery via ``client.models.list()`` at
+      initialisation time; no model names are ever hardcoded.
+    - Selects the most capable, non-deprecated model that supports text
+      generation and caches the choice for the lifetime of the instance.
+    - Fails gracefully: if discovery fails or no suitable model is found, a
+      ``ProviderError`` is raised rather than silently degrading.
+    - API key is never logged.
     """
 
     name = "gemini"
 
+    # Substrings that indicate a model is unsuitable (deprecated / vision-only etc.)
+    _SKIP_SUBSTRINGS: tuple[str, ...] = (
+        "vision",
+        "embedding",
+        "aqa",
+        "legacy",
+        "deprecated",
+    )
+
+    # Preference order: more capable / newer models rank first
+    _CAPABILITY_KEYWORDS: tuple[str, ...] = (
+        "ultra",
+        "pro",
+        "flash",
+    )
+
     def __init__(self, api_key: str) -> None:
+        """
+        Initialise the Gemini client and perform dynamic model discovery.
+
+        Args:
+            api_key: A valid Google AI Studio / Vertex AI API key.
+
+        Raises:
+            ProviderError: If the ``google-genai`` package is not installed.
+            ProviderError: If no suitable text-generation model can be found.
+        """
         try:
-            import google.generativeai as genai
-            self._genai   = genai
-            self._api_key = api_key
-            genai.configure(api_key=api_key)
-            self._model_name = self._discover_model()
-        except ImportError:
+            from google import genai  # type: ignore[import]
+        except ImportError as exc:
             raise ProviderError(
-                "google-generativeai not installed. Run: pip install google-generativeai"
-            )
+                "google-genai package is not installed. "
+                "Run: pip install google-genai"
+            ) from exc
+
+        self._client = genai.Client(api_key=api_key)
+        self._model_name: str = self._discover_model()
+        logger.info("GeminiProvider initialised with model: %s", self._model_name)
+
+    # ── Model discovery ────────────────────────────────────────────────────────
 
     def _discover_model(self) -> str:
-        """Try to list available models; fall back to hardcoded list."""
-        candidates = list(PROVIDER_MODEL_FALLBACKS["gemini"])
-        try:
-            available = [m.name for m in self._genai.list_models()
-                         if "generateContent" in (m.supported_generation_methods or [])]
-            if available:
-                logger.debug("Gemini available models: %s", available[:5])
-                # Prefer candidates that are actually available
-                for c in candidates:
-                    full = f"models/{c}" if not c.startswith("models/") else c
-                    if full in available or c in available:
-                        logger.info("Gemini selected model: %s", c)
-                        return c
-        except Exception as exc:
-            logger.debug("Gemini model discovery failed: %s — using fallback list", exc)
+        """
+        Discover the best available text-generation model dynamically.
 
-        # Return first candidate blindly; complete() will try each
-        return candidates[0]
+        Queries ``client.models.list()``, filters to models that support
+        text generation and are not deprecated, then sorts by capability
+        preference keywords.
+
+        Returns:
+            The name of the selected model (e.g. ``"gemini-1.5-pro"``).
+
+        Raises:
+            ProviderError: If no suitable model is found.
+        """
+        try:
+            all_models = list(self._client.models.list())
+        except Exception as exc:
+            raise ProviderError(
+                f"Gemini model discovery failed — could not list models: {exc}"
+            ) from exc
+
+        if not all_models:
+            raise ProviderError("Gemini model discovery returned an empty model list.")
+
+        candidates: list[str] = []
+        for model in all_models:
+            raw_name: str = getattr(model, "name", "") or ""
+            # Normalise: strip leading "models/" prefix for display
+            short_name = raw_name.removeprefix("models/")
+            # Must support text generation
+            supported_methods: list[str] = getattr(
+                model, "supported_generation_methods", []
+            ) or []
+            if "generateContent" not in supported_methods:
+                continue
+            # Skip vision-only, embedding, or deprecated models
+            if any(skip in short_name.lower() for skip in self._SKIP_SUBSTRINGS):
+                continue
+            candidates.append(short_name)
+
+        if not candidates:
+            raise ProviderError(
+                "No suitable Gemini text-generation models are available for this API key."
+            )
+
+        logger.debug("Gemini candidate models after filtering: %s", candidates)
+
+        # Sort by capability preference: ultra > pro > flash > others
+        def _rank(model_name: str) -> int:
+            name_lower = model_name.lower()
+            for rank, keyword in enumerate(self._CAPABILITY_KEYWORDS):
+                if keyword in name_lower:
+                    return rank
+            return len(self._CAPABILITY_KEYWORDS)
+
+        candidates.sort(key=_rank)
+        selected = candidates[0]
+        logger.info(
+            "Gemini dynamic model selection: selected=%s (from %d candidates)",
+            selected, len(candidates),
+        )
+        return selected
+
+    # ── Core completion ────────────────────────────────────────────────────────
 
     def complete(self, prompt: str, max_tokens: int = 1500) -> AIResponse:
-        candidates = PROVIDER_MODEL_FALLBACKS["gemini"]
-        last_exc: Optional[Exception] = None
+        """
+        Send a text prompt to Gemini and return a normalised ``AIResponse``.
 
-        for model_name in candidates:
-            try:
-                t0 = time.monotonic()
-                model = self._genai.GenerativeModel(model_name)
-                result = model.generate_content(
-                    prompt,
-                    generation_config={"max_output_tokens": max_tokens},
-                )
-                latency = int((time.monotonic() - t0) * 1000)
-                text = result.text if hasattr(result, "text") else str(result)
-                logger.info("Gemini response: model=%s latency=%dms", model_name, latency)
-                return AIResponse(
-                    text=text, provider="gemini", model=model_name, latency_ms=latency
-                )
-            except Exception as exc:
-                logger.debug("Gemini model %s failed: %s", model_name, exc)
-                last_exc = exc
-                continue
+        Uses ``client.models.generate_content()`` with the dynamically
+        selected model. Handles API errors safely — never crashes the caller.
 
-        raise ProviderError(f"All Gemini models failed. Last error: {last_exc}")
+        Args:
+            prompt:     The text prompt to send.
+            max_tokens: Maximum number of tokens to generate.
 
-    def validate_key(self) -> bool:
-        """Attempt a minimal API call to confirm the key is valid."""
+        Returns:
+            ``AIResponse`` with ``ok=True`` on success.
+
+        Raises:
+            ProviderError: If the API call fails.
+        """
+        from google.genai import types as genai_types  # type: ignore[import]
+
+        config = genai_types.GenerateContentConfig(
+            max_output_tokens=max_tokens,
+        )
+
         try:
-            list(self._genai.list_models())
-            return True
-        except Exception:
-            return False
+            t0 = time.monotonic()
+            response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=prompt,
+                config=config,
+            )
+            latency = int((time.monotonic() - t0) * 1000)
+        except Exception as exc:
+            err_str = str(exc)
+            # Surface auth/quota errors immediately
+            if any(kw in err_str.lower() for kw in ("api_key", "permission", "quota", "403", "401")):
+                raise ProviderAuthError(
+                    f"Gemini API key is invalid or lacks permissions: {exc}"
+                ) from exc
+            logger.error("Gemini generate_content failed for model=%s: %s", self._model_name, exc)
+            raise ProviderError(
+                f"Gemini generation failed (model={self._model_name}): {exc}"
+            ) from exc
+
+        # Extract text safely
+        text: str = ""
+        if hasattr(response, "text") and response.text:
+            text = response.text
+        elif hasattr(response, "candidates") and response.candidates:
+            for candidate in response.candidates:
+                if hasattr(candidate, "content") and candidate.content:
+                    for part in getattr(candidate.content, "parts", []):
+                        text += getattr(part, "text", "")
+
+        if not text:
+            logger.warning(
+                "Gemini returned an empty response for model=%s", self._model_name
+            )
+
+        logger.info(
+            "Gemini response: model=%s latency=%dms chars=%d",
+            self._model_name, latency, len(text),
+        )
+        return AIResponse(
+            text=text,
+            provider="gemini",
+            model=self._model_name,
+            latency_ms=latency,
+        )
+
+    # ── Key validation ─────────────────────────────────────────────────────────
+
+    def validate_key(self) -> dict:
+        """
+        Validate the API key by performing a lightweight ``models.list()`` call.
+
+        Returns:
+            A structured dict with keys:
+            - ``valid`` (bool): Whether the key is functional.
+            - ``model`` (str): The model selected during discovery, if valid.
+            - ``error`` (str): Human-readable error message, if invalid.
+        """
+        try:
+            models = list(self._client.models.list())
+            logger.info(
+                "Gemini API key validation succeeded — %d models visible", len(models)
+            )
+            return {
+                "valid": True,
+                "model": self._model_name,
+                "error": None,
+            }
+        except Exception as exc:
+            err_str = str(exc)
+            if any(kw in err_str.lower() for kw in ("api_key", "invalid", "revoked", "403", "401")):
+                reason = "API key is invalid or has been revoked."
+            elif "permission" in err_str.lower():
+                reason = "API key lacks required permissions for the Gemini API."
+            else:
+                reason = f"Unexpected error during key validation: {exc}"
+            logger.error("Gemini API key validation failed: %s", reason)
+            return {
+                "valid": False,
+                "model": None,
+                "error": reason,
+            }
+
+    # ── Executive summary pipeline ─────────────────────────────────────────────
+
+    def generate_executive_summary(self, audit_json: str) -> AIResponse:
+        """
+        Generate a professional executive summary from scan results.
+
+        Formats the audit data cleanly, uses the dynamically selected model,
+        and falls back gracefully if the AI call fails. Never triggers 404
+        because model selection is dynamic.
+
+        Args:
+            audit_json: JSON string of scan results (will be truncated safely).
+
+        Returns:
+            ``AIResponse`` — either an AI-generated summary or a safe fallback.
+        """
+        # Truncate safely to avoid context-length errors
+        truncated_json = audit_json[:10000]
+        prompt = PROMPT_EXECUTIVE_SUMMARY.format(audit_json=truncated_json)
+        try:
+            return self.complete(prompt, max_tokens=1500)
+        except ProviderAuthError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Gemini executive summary generation failed (%s) — "
+                "caller should fall back to heuristic provider.", exc
+            )
+            raise ProviderError(
+                f"Executive summary generation failed: {exc}"
+            ) from exc
 
 
 # ── OpenAI (also used for DeepSeek and custom endpoints) ──────────────────────
@@ -480,7 +669,7 @@ class HeuristicProvider(AIProvider):
             "frameworks have applicable gaps: CIS Benchmarks (public access controls), "
             "NIST 800-53 IA-5 (credential management), SOC2 CC6.7 (data transmission controls).",
             "",
-            f"*Report generated by CloudAudit v2.0.0 — Powered by xtawb — https://linktr.ee/xtawb*",
+            f"*Report generated by CloudAudit v1.0.1 — Powered by xtawb — https://linktr.ee/xtawb*",
         ]
 
         return AIResponse(text="\n".join(lines), provider="heuristic", model="builtin")

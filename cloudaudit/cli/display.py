@@ -68,11 +68,11 @@ OWNERSHIP_NOTICE = f"""{C.YELLOW}{C.BOLD}
   +------------------------------------------------------------------+
   |                    OWNERSHIP DECLARATION                         |
   +------------------------------------------------------------------+
-  |  This tool audits cloud storage assets that you own.            |
-  |  By providing --confirm-ownership you declare that:             |
-  |    [1] You are authorised to audit the target resource          |
-  |    [2] The target belongs to your organisation                  |
-  |    [3] You comply with all applicable laws and policies         |
+  |  This tool audits cloud storage assets that you own.             |
+  |  By providing --confirm-ownership you declare that:              |
+  |    [1] You are authorised to audit the target resource           |
+  |    [2] The target belongs to your organisation                   |
+  |    [3] You comply with all applicable laws and policies          |
   +------------------------------------------------------------------+
 {C.RESET}"""
 

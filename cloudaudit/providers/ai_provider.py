@@ -89,23 +89,80 @@ class AIProvider(ABC):
 # ── Gemini ─────────────────────────────────────────────────────────────────────
 
 class GeminiProvider(AIProvider):
+    """
+    Google Gemini provider using the modern ``google.genai`` SDK.
+    Performs dynamic model discovery — no hardcoded model names.
+    """
 
-    def __init__(self, api_key: str, model: str = "gemini-1.5-flash") -> None:
+    # Substrings indicating a model is unsuitable
+    _SKIP_SUBSTRINGS: tuple = ("vision", "embedding", "aqa", "legacy", "deprecated")
+    # Preference ranking for model selection
+    _CAPABILITY_KEYWORDS: tuple = ("ultra", "pro", "flash")
+
+    def __init__(self, api_key: str) -> None:
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            self._model = genai.GenerativeModel(model)
+            from google import genai  # type: ignore[import]
         except ImportError:
             raise ProviderError(
-                "google-generativeai package not installed. "
-                "Run: pip install google-generativeai"
+                "google-genai package not installed. "
+                "Run: pip install google-genai"
             )
+        self._client = genai.Client(api_key=api_key)
+        self._model_name: str = self._discover_model()
+        logger.info("GeminiProvider (providers/ai_provider) initialised: model=%s", self._model_name)
+
+    def _discover_model(self) -> str:
+        """Dynamically select the best available text-generation model."""
+        try:
+            all_models = list(self._client.models.list())
+        except Exception as exc:
+            raise ProviderError(f"Gemini model discovery failed: {exc}") from exc
+
+        candidates: list[str] = []
+        for model in all_models:
+            raw_name: str = getattr(model, "name", "") or ""
+            short_name = raw_name.removeprefix("models/")
+            supported: list[str] = getattr(model, "supported_generation_methods", []) or []
+            if "generateContent" not in supported:
+                continue
+            if any(s in short_name.lower() for s in self._SKIP_SUBSTRINGS):
+                continue
+            candidates.append(short_name)
+
+        if not candidates:
+            raise ProviderError("No suitable Gemini text-generation models available.")
+
+        def _rank(n: str) -> int:
+            nl = n.lower()
+            for i, kw in enumerate(self._CAPABILITY_KEYWORDS):
+                if kw in nl:
+                    return i
+            return len(self._CAPABILITY_KEYWORDS)
+
+        candidates.sort(key=_rank)
+        selected = candidates[0]
+        logger.info("Gemini dynamic model selected: %s (from %d candidates)", selected, len(candidates))
+        return selected
 
     def generate_summary(self, stats: ScanStats) -> str:
+        from google.genai import types as genai_types  # type: ignore[import]
+
         prompt = _SUMMARY_PROMPT.format(audit_json=self._build_audit_json(stats))
+        config = genai_types.GenerateContentConfig(max_output_tokens=1024)
         try:
-            response = self._model.generate_content(prompt)
-            return response.text
+            response = self._client.models.generate_content(
+                model=self._model_name,
+                contents=prompt,
+                config=config,
+            )
+            text = ""
+            if hasattr(response, "text") and response.text:
+                text = response.text
+            elif hasattr(response, "candidates") and response.candidates:
+                for c in response.candidates:
+                    for part in getattr(getattr(c, "content", None), "parts", []):
+                        text += getattr(part, "text", "")
+            return text
         except Exception as exc:
             raise ProviderError(f"Gemini API error: {exc}") from exc
 
