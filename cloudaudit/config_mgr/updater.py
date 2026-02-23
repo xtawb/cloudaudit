@@ -71,7 +71,7 @@ def perform_update() -> Tuple[bool, str]:
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade",
-             f"git+{__github_api__.replace('/repos/', '/').replace('/releases/latest', '')}"],
+             f"git+{__github_api__.replace('https://api.github.com/repos/', 'https://github.com/').replace('/releases/latest', '')}"],
             capture_output=True,
             text=True,
             timeout=120,
