@@ -124,19 +124,19 @@ graph TD
 
 ```mermaid
 graph TD
-    A[API Key] --> B[GeminiProvider.__init__()]
-    B --> C[client.models.list()]
-    C --> D{Filter: generateContent support?}
-    D -- keep --> E[Filter: not deprecated / vision-only / embedding]
-    E --> F[Sort: ultra > pro > flash > others]
-    F --> G[Store best candidate as self._model_name]
-    G --> H[GeminiProvider.complete(prompt)]
-    H --> I[client.models.generate_content]
-    I --> J{Success?}
-    J -- yes --> K[AIResponse(text, provider, model, latency_ms)]
-    J -- no --> L[ProviderAuthError / ProviderError]
-    L --> M[ProviderChain catches → next provider → HeuristicProvider]
-    M --> N[AIResponse.ok → caller receives clean string]
+    A["API Key"] --> B["GeminiProvider.__init__()"]
+    B --> C["client.models.list()"]
+    C --> D{"Filter: generateContent support?"}
+    D -- "keep" --> E["Filter: not deprecated / vision-only / embedding"]
+    E --> F["Sort: ultra > pro > flash > others"]
+    F --> G["Store best candidate as self._model_name"]
+    G --> H["GeminiProvider.complete(prompt)"]
+    H --> I["client.models.generate_content"]
+    I --> J{"Success?"}
+    J -- "yes" --> K["AIResponse(text, provider, model, latency_ms)"]
+    J -- "no" --> L["ProviderAuthError / ProviderError"]
+    L --> M["ProviderChain catches → next provider → HeuristicProvider"]
+    M --> N["AIResponse.ok → caller receives clean string"]
     K --> N
 ```
 
@@ -176,12 +176,12 @@ AIResponse.ok  →  caller receives clean string, never crashes
 
 ```mermaid
 graph TD
-    A[client.models.list()] --> B[Filter models: keep those with generateContent support]
-    B --> C[Filter models: exclude deprecated, vision-only, embedding]
-    C --> D[Sort by preference: ultra > pro > flash > others]
-    D --> E{Any models left?}
-    E -- Yes --> F[Select first model; log 'GeminiProvider initialised with model: X']
-    E -- No --> G[Raise ProviderError (fail loudly)]
+    A["client.models.list()"] --> B["Filter models: keep those with generateContent support"]
+    B --> C["Filter models: exclude deprecated, vision-only, embedding"]
+    C --> D["Sort by preference: ultra > pro > flash > others"]
+    D --> E{"Any models left?"}
+    E -- "Yes" --> F[Select first model; log 'GeminiProvider initialised with model: X']
+    E -- "No" --> G["Raise ProviderError (fail loudly)"]
 ```
 
 ```
@@ -208,11 +208,12 @@ client.models.list()
 
 ```mermaid
 graph TD
-    Start[AI call] --> Outcome{Outcome}
-    Outcome -->|ProviderAuthError| Auth[Surface immediately, no retry (bad key)]
-    Outcome -->|ProviderError| PE[ProviderChain logs warning, advances to next provider]
-    Outcome -->|Empty response| Empty[Log warning, return AIResponse(ok=False)]
-    Outcome -->|HeuristicProvider| Heur[Deterministic summary, always succeeds, never raises]
+    Start["AI call"] --> Outcome{"Outcome"}
+
+    Outcome -->|ProviderAuthError| Auth["Surface immediately, no retry (bad key)"]
+    Outcome -->|ProviderError| PE["ProviderChain logs warning and advances to next provider"]
+    Outcome -->|Empty response| Empty["Log warning and return AIResponse(ok=False)"]
+    Outcome -->|HeuristicProvider| Heur["Deterministic summary, always succeeds, never raises"]
 ```
 
 ```
@@ -231,14 +232,14 @@ AI call
 
 ```mermaid
 graph TD
-    A[generate_executive_summary(scan_results)] --> B[Serialise findings → audit_json (truncated to 10,000 chars)]
-    B --> C[PROMPT_EXECUTIVE_SUMMARY.format(audit_json=...)]
-    C --> D[ProviderChain.generate_executive_summary(audit_json)]
-    D --> E[GeminiProvider.complete() using dynamically discovered model]
-    E --> F{Success?}
-    F -- Yes --> G[Structured 4-6 paragraph executive summary]
-    F -- No --> H[HeuristicProvider.generate_executive_summary() → deterministic summary]
-    G --> I[Return summary]
+    A["generate_executive_summary(scan_results)"] --> B["Serialise findings to audit_json (truncated to 10,000 chars)"]
+    B --> C["PROMPT_EXECUTIVE_SUMMARY.format(audit_json=...)"]
+    C --> D["ProviderChain.generate_executive_summary(audit_json)"]
+    D --> E["GeminiProvider.complete() using dynamically discovered model"]
+    E --> F{"Success?"}
+    F -- "Yes" --> G["Structured 4-6 paragraph executive summary"]
+    F -- "No" --> H["HeuristicProvider.generate_executive_summary() - deterministic summary"]
+    G --> I["Return summary"]
     H --> I
 ```
 
@@ -265,27 +266,32 @@ generate_executive_summary(scan_results)
 
 ```mermaid
 graph TD
-    URL[URL] --> ContainerDetector[ContainerDetector]
-    ContainerDetector --> Crawler[Crawler (async)]
-    ContainerDetector --> ContainerInfo[ContainerInfo]
-    Crawler --> ScanStats[ScanStats accumulate]
-    Crawler --> FileList[FileList]
-    FileList --> SecretScanner[SecretScanner]
-    FileList --> HighEntropyDetector[HighEntropyDetector]
-    FileList --> AIFileAnalyzer[AIFileAnalyzer]
-    FileList --> ArchiveExtractor[ArchiveExtractor]
-    FileList --> ImageMetaExtractor[ImageMetaExtractor]
+    URL["URL"] --> ContainerDetector["ContainerDetector"]
 
-    SecretScanner -->|Finding(DETERMINISTIC)| AdvancedIntelligence[AdvancedIntelligence<br/>duplicate detection, misconfiguration aggregation]
+    ContainerDetector --> Crawler["Crawler (async)"]
+    ContainerDetector --> ContainerInfo["ContainerInfo"]
+
+    Crawler --> ScanStats["ScanStats accumulate"]
+    Crawler --> FileList["FileList"]
+
+    FileList --> SecretScanner["SecretScanner"]
+    FileList --> HighEntropyDetector["HighEntropyDetector"]
+    FileList --> AIFileAnalyzer["AIFileAnalyzer"]
+    FileList --> ArchiveExtractor["ArchiveExtractor"]
+    FileList --> ImageMetaExtractor["ImageMetaExtractor"]
+
+    SecretScanner -->|Finding(DETERMINISTIC)| AdvancedIntelligence["AdvancedIntelligence - duplicate detection, misconfiguration aggregation"]
     HighEntropyDetector -->|Finding(DETERMINISTIC)| AdvancedIntelligence
-    AIFileAnalyzer --> AIFinding[AIFinding]
-    AIFinding -->|Finding(AI_HEURISTIC) [selective]| AdvancedIntelligence
+
+    AIFileAnalyzer --> AIFinding["AIFinding"]
+    AIFinding -->|Finding(AI_HEURISTIC) selective| AdvancedIntelligence
+
     ArchiveExtractor -->|recursive FileList| FileList
     ImageMetaExtractor -->|Finding(EXIF)| AdvancedIntelligence
 
-    AdvancedIntelligence --> RiskScorer[RiskScorer v2<br/>risk_score (0-10)]
-    RiskScorer -->|risk_score| ProviderChain[ProviderChain.generate_executive_summary]
-    ProviderChain --> ReportGenerator[ReportGenerator<br/>.json + .html + .md]
+    AdvancedIntelligence --> RiskScorer["RiskScorer v2 - risk_score (0-10)"]
+    RiskScorer -->|risk_score| ProviderChain["ProviderChain.generate_executive_summary"]
+    ProviderChain --> ReportGenerator["ReportGenerator - .json + .html + .md"]
 ```
 
 ```
@@ -321,19 +327,19 @@ Crawler (async)                            ScanStats accumulate
 
 ```mermaid
 graph TD
-    cloudaudit[cloudaudit]
-    aiohttp[aiohttp — async HTTP]
-    aiofiles[aiofiles — async file I/O]
-    pythonmagic[python-magic — MIME type detection]
-    Pillow[Pillow — EXIF metadata extraction]
-    cryptography[cryptography — Fernet key encryption]
-    pyyaml[pyyaml — YAML config parsing]
-    rich[rich — terminal progress UI]
-    jinja2[jinja2 — HTML report templating]
-    google_genai[google-genai (optional) — Gemini provider]
-    openai[openai (optional) — OpenAI / DeepSeek / custom endpoint]
-    anthropic[anthropic (optional) — Claude provider]
-    py7zr[py7zr (optional) — 7-Zip archive extraction]
+    cloudaudit["cloudaudit"]
+    aiohttp["aiohttp — async HTTP"]
+    aiofiles["aiofiles — async file I/O"]
+    pythonmagic["python-magic — MIME type detection"]
+    Pillow["Pillow — EXIF metadata extraction"]
+    cryptography["cryptography — Fernet key encryption"]
+    pyyaml["pyyaml — YAML config parsing"]
+    rich["rich — terminal progress UI"]
+    jinja2["jinja2 — HTML report templating"]
+    google_genai["google-genai (optional) — Gemini provider"]
+    openai["openai (optional) — OpenAI / DeepSeek / custom endpoint"]
+    anthropic["anthropic (optional) — Claude provider"]
+    py7zr["py7zr (optional) — 7-Zip archive extraction"]
 
     cloudaudit --> aiohttp
     cloudaudit --> aiofiles
