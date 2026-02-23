@@ -280,17 +280,17 @@ graph TD
     FileList --> ArchiveExtractor["ArchiveExtractor"]
     FileList --> ImageMetaExtractor["ImageMetaExtractor"]
 
-    SecretScanner -->|Finding(DETERMINISTIC)| AdvancedIntelligence["AdvancedIntelligence - duplicate detection, misconfiguration aggregation"]
-    HighEntropyDetector -->|Finding(DETERMINISTIC)| AdvancedIntelligence
+    SecretScanner -->|"Finding (DETERMINISTIC)"| AdvancedIntelligence["AdvancedIntelligence - duplicate detection, misconfiguration aggregation"]
+    HighEntropyDetector -->|"Finding (DETERMINISTIC)"| AdvancedIntelligence
 
     AIFileAnalyzer --> AIFinding["AIFinding"]
-    AIFinding -->|Finding(AI_HEURISTIC) selective| AdvancedIntelligence
+    AIFinding -->|"Finding (AI_HEURISTIC) selective"| AdvancedIntelligence
 
-    ArchiveExtractor -->|recursive FileList| FileList
-    ImageMetaExtractor -->|Finding(EXIF)| AdvancedIntelligence
+    ArchiveExtractor -->|"recursive FileList"| FileList
+    ImageMetaExtractor -->|"Finding (EXIF)"| AdvancedIntelligence
 
     AdvancedIntelligence --> RiskScorer["RiskScorer v2 - risk_score (0-10)"]
-    RiskScorer -->|risk_score| ProviderChain["ProviderChain.generate_executive_summary"]
+    RiskScorer -->|"risk_score"| ProviderChain["ProviderChain.generate_executive_summary"]
     ProviderChain --> ReportGenerator["ReportGenerator - .json + .html + .md"]
 ```
 
