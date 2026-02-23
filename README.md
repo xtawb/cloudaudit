@@ -3,10 +3,16 @@
 **Next-Generation AI-Powered Cloud Security Auditing Framework**
 
 ```
-  ______  ___                    _____              ___ __
- / ___/ |/ / ___  __ _____ ___  / ___/ __ ___  ___/ (_) /_
-/ /__ /    / / _ \/ // / _ `/ _ \ \/ // // _ \/ _  / / __/
-\___//_/|_/  \___/\_,_/\___/\___/\___/_//_/\___/\_,_/_/\__/
+                                                                                              
+              ,,                           ,,                                ,,    ,,         
+  .g8"""bgd `7MM                         `7MM        db                    `7MM    db   mm    
+.dP'     `M   MM                           MM       ;MM:                     MM         MM    
+dM'       `   MM  ,pW"Wq.`7MM  `7MM   ,M""bMM      ,V^MM.  `7MM  `7MM   ,M""bMM  `7MM mmMMmm  
+MM            MM 6W'   `Wb MM    MM ,AP    MM     ,M  `MM    MM    MM ,AP    MM    MM   MM    
+MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM    MM   MM    
+`Mb.     ,'   MM YA.   ,A9 MM    MM `Mb    MM    A'     VML  MM    MM `Mb    MM    MM   MM    
+  `"bmmmd'  .JMML.`Ybmd9'  `Mbod"YML.`Wbmd"MML..AMA.   .AMMA.`Mbod"YML.`Wbmd"MML..JMML. `Mbmo 
+       
 ```
 
 [![Version](https://img.shields.io/badge/version-1.0.1-blue?style=flat-square&logo=git)](#)
