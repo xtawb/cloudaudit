@@ -227,9 +227,9 @@ class GeminiProvider(AIProvider):
             # Normalise: strip leading "models/" prefix for display
             short_name = raw_name.removeprefix("models/")
             # Must support text generation
-            supported_methods: list[str] = getattr(
-                model, "supported_generation_methods", []
-            ) or []
+            supported_methods = getattr(model, "supported_actions", None)
+            if not supported_methods:
+                supported_methods = getattr(model, "supported_generation_methods", [])
             if "generateContent" not in supported_methods:
                 continue
             # Skip vision-only, embedding, or deprecated models
