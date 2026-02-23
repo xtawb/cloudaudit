@@ -36,9 +36,9 @@ The following packages unlock optional features:
    * - Package
      - Feature
      - Install
-   * - ``google-generativeai``
+   * - ``google-genai``
      - Google Gemini AI summaries and analysis
-     - ``pip install google-generativeai``
+     - ``pip install cloudaudit[gemini]``
    * - ``openai``
      - OpenAI GPT and DeepSeek AI (OpenAI-compatible)
      - ``pip install openai``

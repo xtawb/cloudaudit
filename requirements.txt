@@ -7,7 +7,7 @@ cryptography>=41.0
 pyyaml>=6.0
 
 # Optional AI providers — install as needed:
-# pip install google-generativeai    (Gemini)
+# pip install google-genai           (Gemini — modern SDK)
 # pip install openai                 (OpenAI, DeepSeek, custom endpoints)
 # pip install anthropic              (Claude)
 # Ollama: run locally at https://ollama.ai — no pip install needed

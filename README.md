@@ -3,20 +3,21 @@
 **Next-Generation AI-Powered Cloud Security Auditing Framework**
 
 ```
-              ,,                           ,,                                ,,    ,,         
-  .g8"""bgd `7MM                         `7MM        db                    `7MM    db   mm    
-.dP'     `M   MM                           MM       ;MM:                     MM         MM    
-dM'       `   MM  ,pW"Wq.`7MM  `7MM   ,M""bMM      ,V^MM.  `7MM  `7MM   ,M""bMM  `7MM mmMMmm  
-MM            MM 6W'   `Wb MM    MM ,AP    MM     ,M  `MM    MM    MM ,AP    MM    MM   MM    
-MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM    MM   MM    
-`Mb.     ,'   MM YA.   ,A9 MM    MM `Mb    MM    A'     VML  MM    MM `Mb    MM    MM   MM    
-  `"bmmmd'  .JMML.`Ybmd9'  `Mbod"YML.`Wbmd"MML..AMA.   .AMMA.`Mbod"YML.`Wbmd"MML..JMML. `Mbmo 
+  ______  ___                    _____              ___ __
+ / ___/ |/ / ___  __ _____ ___  / ___/ __ ___  ___/ (_) /_
+/ /__ /    / / _ \/ // / _ `/ _ \ \/ // // _ \/ _  / / __/
+\___//_/|_/  \___/\_,_/\___/\___/\___/_//_/\___/\_,_/_/\__/
 ```
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](#)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](#)
-[![Mode](https://img.shields.io/badge/mode-read--only-green)](#)
-
+[![Version](https://img.shields.io/badge/version-1.0.1-blue?style=flat-square&logo=git)](#)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white)](#)
+[![License](https://img.shields.io/badge/license-Proprietary-red?style=flat-square)](#)
+[![Docs](https://img.shields.io/readthedocs/cloudaudit?style=flat-square&logo=readthedocs)](#)
+[![Mode](https://img.shields.io/badge/mode-read--only-green?style=flat-square&logo=shield)](#)
+[![Code Style](https://img.shields.io/badge/code%20style-ruff-black?style=flat-square)](#)
+[![Security](https://img.shields.io/badge/security-hardened-success?style=flat-square&logo=springsecurity)](#)
+[![Maintained](https://img.shields.io/badge/maintained-yes-brightgreen?style=flat-square)](#)
+[![AI Powered](https://img.shields.io/badge/AI-Gemini%20%7C%20GPT--4o%20%7C%20Claude-blueviolet?style=flat-square&logo=googlegemini)](#)
 
 > **Developed by xtawb** | [https://linktr.ee/xtawb](https://linktr.ee/xtawb) | [GitHub](https://github.com/xtawb/cloudaudit)
 
@@ -35,7 +36,212 @@ CloudAudit is designed for **defensive internal use only**. Every design decisio
 
 ---
 
-## Architecture
+## Technical Architecture
+
+### Layered Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          CLI Layer                                   │
+│   cli/main.py  ·  cli/display.py                                    │
+│   argparse entry-point · ownership gate · interactive AI setup      │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────────────────┐
+│                        Config Layer                                  │
+│   core/config.py  ·  config_mgr/key_manager.py                     │
+│   AuditConfig · Fernet-encrypted key storage · PBKDF2-SHA256 salt  │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────────────────┐
+│                       Scanner Engine                                 │
+│   scanners/container_detector.py  ·  scanners/crawler.py            │
+│   scanners/secret_scanner.py  ·  scanners/file_classifier.py        │
+│   scanners/archive_extractor.py                                      │
+│   ─────────────────────────────────────────────────────────────     │
+│   AWS S3 XML pagination · Azure XML · HTML directory crawl          │
+│   20+ regex patterns + Shannon entropy gate                          │
+│   ZIP/TAR/GZ/JAR/WAR extraction (zip-slip + bomb protected)         │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────────────────┐
+│                     AI Integration Layer                             │
+│   ai/providers.py  ·  ai/analyzer.py                                │
+│   ─────────────────────────────────────────────────────────────     │
+│   Provider Abstraction  ──►  GeminiProvider (google.genai SDK)      │
+│                          ──►  OpenAICompatibleProvider (GPT-4o)     │
+│                          ──►  ClaudeProvider (Anthropic)            │
+│                          ──►  OllamaProvider (local)                │
+│                          ──►  HeuristicProvider (always available)  │
+│   ─────────────────────────────────────────────────────────────     │
+│   ProviderChain: primary → heuristic fallback                       │
+│   Dynamic Gemini model discovery via client.models.list()           │
+│   No hardcoded model names — zero 404 errors                        │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────────────────┐
+│                    Intelligence Layer                                 │
+│   intelligence/advanced.py  ·  intelligence/risk_scorer.py          │
+│   intelligence/image_meta.py                                         │
+│   ─────────────────────────────────────────────────────────────     │
+│   High-entropy detection · Duplicate/reuse detection                │
+│   Exposure surface mapping · Composite risk scoring v2              │
+│   EXIF GPS/device extraction                                         │
+└───────────────────────────────┬─────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼─────────────────────────────────────┐
+│                     Reporting Engine                                 │
+│   reports/generator.py                                              │
+│   ─────────────────────────────────────────────────────────────     │
+│   JSON (SIEM-ready) · HTML (Jinja2 stakeholder) · Markdown         │
+│   Executive summary embedded · Severity distribution charts         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### AI Integration Layer — Detail
+
+```
+API Key
+  │
+  ▼
+GeminiProvider.__init__()
+  │
+  ├─► client.models.list()           ← dynamic discovery, no hardcoded names
+  │         │
+  │         ▼
+  │   Filter: generateContent support
+  │   Filter: not deprecated / vision-only / embedding
+  │   Sort:   ultra > pro > flash > others
+  │         │
+  │         ▼
+  │   self._model_name = best_candidate   ← stored once, reused forever
+  │
+  ▼
+GeminiProvider.complete(prompt)
+  │
+  ├─► client.models.generate_content(model=self._model_name, ...)
+  │         │
+  │         ├─ success → AIResponse(text, provider, model, latency_ms)
+  │         │
+  │         └─ failure → ProviderAuthError (401/403) or ProviderError
+  │                           │
+  │                           ▼
+  │                    ProviderChain catches → next provider → HeuristicProvider
+  │
+  ▼
+AIResponse.ok  →  caller receives clean string, never crashes
+```
+
+### Model Selection Flow
+
+```
+client.models.list()
+        │
+        ▼
+  for model in all_models:
+    │
+    ├─ supported_generation_methods includes "generateContent"? → keep
+    ├─ name contains "vision"/"embedding"/"deprecated"?         → skip
+    └─ neither?                                                 → keep
+        │
+        ▼
+  Sort candidates by preference: ultra > pro > flash > others
+        │
+        ▼
+  Select candidates[0]  ──►  log "GeminiProvider initialised with model: X"
+        │
+        ▼
+  No candidates → raise ProviderError (fail loudly, never silently)
+```
+
+### Error Handling Flow
+
+```
+AI call
+  │
+  ├─ ProviderAuthError  → surface immediately, no retry (bad key)
+  │
+  ├─ ProviderError      → ProviderChain logs warning, advances to next provider
+  │
+  ├─ Empty response     → log warning, return AIResponse(ok=False)
+  │
+  └─ HeuristicProvider  → deterministic summary, always succeeds, never raises
+```
+
+### Executive Summary Pipeline
+
+```
+generate_executive_summary(scan_results)
+        │
+        ▼
+  Serialise findings → audit_json (truncated to 10,000 chars)
+        │
+        ▼
+  PROMPT_EXECUTIVE_SUMMARY.format(audit_json=...)
+        │
+        ▼
+  ProviderChain.generate_executive_summary(audit_json)
+        │
+        ├─ GeminiProvider.complete()  → uses dynamically discovered model
+        │         └─ success → structured 4-6 paragraph executive summary
+        │
+        └─ HeuristicProvider.generate_executive_summary()  ← fallback
+                  └─ always succeeds, severity-aware deterministic summary
+```
+
+### Data Flow Between Components
+
+```
+URL
+ │
+ ▼
+ContainerDetector  ──────────────────────────────┐
+ │                                               │ ContainerInfo
+ ▼                                               ▼
+Crawler (async)                            ScanStats accumulate
+ │  ──► FileList
+ │
+ ├──► SecretScanner         → Finding(DETERMINISTIC)
+ ├──► HighEntropyDetector   → Finding(DETERMINISTIC)
+ ├──► AIFileAnalyzer        → AIFinding → Finding(AI_HEURISTIC) [selective]
+ ├──► ArchiveExtractor      → recursive FileList
+ └──► ImageMetaExtractor    → Finding(EXIF)
+         │
+         ▼
+    AdvancedIntelligence (duplicate detection, misconfiguration aggregation)
+         │
+         ▼
+    RiskScorer v2  →  risk_score (0-10)
+         │
+         ▼
+    ProviderChain.generate_executive_summary()
+         │
+         ▼
+    ReportGenerator  →  .json  +  .html  +  .md
+```
+
+### Dependency Graph
+
+```
+cloudaudit
+├── aiohttp          — async HTTP (GET/HEAD/OPTIONS only)
+├── aiofiles         — async file I/O for archive workspace
+├── python-magic     — MIME type detection
+├── Pillow           — EXIF metadata extraction
+├── cryptography     — Fernet key encryption (Fernet + PBKDF2)
+├── pyyaml           — YAML config parsing
+├── rich             — terminal progress UI
+├── jinja2           — HTML report templating
+│
+├── [optional] google-genai    — Gemini provider (modern SDK)
+├── [optional] openai          — OpenAI / DeepSeek / custom endpoint
+├── [optional] anthropic       — Claude provider
+└── [optional] py7zr           — 7-Zip archive extraction
+```
+
+---
+
+## Architecture (File Tree)
 
 ```
 cloudaudit/
@@ -50,8 +256,9 @@ cloudaudit/
 │   ├── logger.py            Structured logging configuration
 │   └── models.py            Finding, ExposedFile, ContainerInfo, ScanStats data models
 ├── ai/
-│   ├── providers.py         Unified AI layer — Gemini, OpenAI, Claude, DeepSeek, Ollama,
-│   │                        custom endpoints, heuristic fallback, automatic provider chain
+│   ├── providers.py         Unified AI layer — Gemini (google.genai), OpenAI, Claude,
+│   │                        DeepSeek, Ollama, custom endpoints, heuristic fallback,
+│   │                        automatic provider chain, dynamic model discovery
 │   └── analyzer.py          AI semantic file analysis + ML-inspired anomaly scoring
 ├── config_mgr/
 │   ├── key_manager.py       Encrypted API key storage (Fernet AES), live key validation
@@ -127,6 +334,7 @@ URL Input
     v
 [Phase 10] AI Executive Summary
            Automatic provider chain: primary -> heuristic fallback
+           Gemini: dynamic model discovery, zero 404 errors
     |
     v
 [Phase 11] Report Output
@@ -152,12 +360,12 @@ pip install -e .
 ### Optional Dependencies
 
 ```bash
-pip install google-generativeai   # Google Gemini AI
-pip install openai                # OpenAI GPT / DeepSeek (OpenAI-compatible)
-pip install anthropic             # Anthropic Claude
-pip install Pillow                # Image EXIF metadata analysis
-pip install cryptography          # Encrypted local API key storage
-pip install py7zr                 # 7-Zip archive extraction
+pip install google-genai       # Google Gemini AI (modern SDK)
+pip install openai             # OpenAI GPT / DeepSeek (OpenAI-compatible)
+pip install anthropic          # Anthropic Claude
+pip install Pillow             # Image EXIF metadata analysis
+pip install cryptography       # Encrypted local API key storage
+pip install py7zr              # 7-Zip archive extraction
 ```
 
 ---
@@ -390,7 +598,7 @@ Override: Any cloud credential finding (AWS, GCP, Azure, GitHub) forces minimum 
 CloudAudit checks [GitHub releases](https://github.com/xtawb/cloudaudit/releases/latest) at startup:
 
 ```
-A new version is available (v2.1.0).
+A new version is available (v1.0.2).
 Do you want to update now? [Y/n]:
 ```
 
@@ -398,6 +606,12 @@ Do you want to update now? [Y/n]:
 - On decline: continues execution with current version
 - On accept: pip upgrade from GitHub, confirms success
 - On update failure: reports error, continues running
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 ---
 
@@ -427,5 +641,5 @@ By using `--confirm-ownership`, you declare that you are authorised to audit the
 
 ---
 
-*CloudAudit v2.0.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*
+*CloudAudit v1.0.1 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
 *Powered by xtawb | Defensive. Intelligent. Enterprise-Grade.*
