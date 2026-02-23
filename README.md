@@ -46,6 +46,7 @@ CloudAudit is designed for **defensive internal use only**. Every design decisio
 
 ### Layered Architecture
 
+```mermaid
 graph TD
     CLI["CLI Layer<br/>cli/main.py, cli/display.py<br/>argparse entry-point, ownership gate, interactive AI setup"]
     Config["Config Layer<br/>core/config.py, config_mgr/key_manager.py<br/>AuditConfig, Fernet-encrypted key storage, PBKDF2-SHA256 salt"]
@@ -59,7 +60,7 @@ graph TD
     Scanner --> AI
     AI --> Intel
     Intel --> Report
-    
+```    
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -121,6 +122,7 @@ graph TD
 
 ### AI Integration Layer — Detail
 
+```mermaid
 graph TD
     A[API Key] --> B[GeminiProvider.__init__()]
     B --> C[client.models.list()]
@@ -136,7 +138,7 @@ graph TD
     L --> M[ProviderChain catches → next provider → HeuristicProvider]
     M --> N[AIResponse.ok → caller receives clean string]
     K --> N
-    
+```    
 
 ```
 API Key
@@ -172,6 +174,7 @@ AIResponse.ok  →  caller receives clean string, never crashes
 
 ### Model Selection Flow
 
+```mermaid
 graph TD
     A[client.models.list()] --> B[Filter models: keep those with generateContent support]
     B --> C[Filter models: exclude deprecated, vision-only, embedding]
@@ -179,7 +182,7 @@ graph TD
     D --> E{Any models left?}
     E -- Yes --> F[Select first model; log 'GeminiProvider initialised with model: X']
     E -- No --> G[Raise ProviderError (fail loudly)]
-    
+```    
 
 ```
 client.models.list()
@@ -203,13 +206,14 @@ client.models.list()
 
 ### Error Handling Flow
 
+```mermaid
 graph TD
     Start[AI call] --> Outcome{Outcome}
     Outcome -->|ProviderAuthError| Auth[Surface immediately, no retry (bad key)]
     Outcome -->|ProviderError| PE[ProviderChain logs warning, advances to next provider]
     Outcome -->|Empty response| Empty[Log warning, return AIResponse(ok=False)]
     Outcome -->|HeuristicProvider| Heur[Deterministic summary, always succeeds, never raises]
-    
+```    
 
 ```
 AI call
@@ -225,6 +229,7 @@ AI call
 
 ### Executive Summary Pipeline
 
+```mermaid
 graph TD
     A[generate_executive_summary(scan_results)] --> B[Serialise findings → audit_json (truncated to 10,000 chars)]
     B --> C[PROMPT_EXECUTIVE_SUMMARY.format(audit_json=...)]
@@ -235,7 +240,7 @@ graph TD
     F -- No --> H[HeuristicProvider.generate_executive_summary() → deterministic summary]
     G --> I[Return summary]
     H --> I
-    
+```    
 
 ```
 generate_executive_summary(scan_results)
@@ -258,6 +263,7 @@ generate_executive_summary(scan_results)
 
 ### Data Flow Between Components
 
+```mermaid
 graph TD
     URL[URL] --> ContainerDetector[ContainerDetector]
     ContainerDetector --> Crawler[Crawler (async)]
@@ -280,7 +286,7 @@ graph TD
     AdvancedIntelligence --> RiskScorer[RiskScorer v2<br/>risk_score (0-10)]
     RiskScorer -->|risk_score| ProviderChain[ProviderChain.generate_executive_summary]
     ProviderChain --> ReportGenerator[ReportGenerator<br/>.json + .html + .md]
-    
+```    
 
 ```
 URL
@@ -313,7 +319,7 @@ Crawler (async)                            ScanStats accumulate
 
 ### Dependency Graph
 
-```
+```mermaid
 graph TD
     cloudaudit[cloudaudit]
     aiohttp[aiohttp — async HTTP]
