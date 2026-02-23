@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.abspath(".."))
 try:
     from cloudaudit.core.constants import __version__
 except ImportError:
-    __version__ = "1.0.1"
+    __version__ = "1.0.2"
 
 # ── Project metadata ───────────────────────────────────────────────────────────
 
