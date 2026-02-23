@@ -313,6 +313,7 @@ Crawler (async)                            ScanStats accumulate
 
 ### Dependency Graph
 
+```
 graph TD
     cloudaudit[cloudaudit]
     aiohttp[aiohttp — async HTTP]
@@ -340,7 +341,7 @@ graph TD
     cloudaudit --> openai
     cloudaudit --> anthropic
     cloudaudit --> py7zr
-    
+```    
 
 ```
 cloudaudit
