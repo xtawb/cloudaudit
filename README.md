@@ -60,7 +60,7 @@ graph TD
     Scanner --> AI
     AI --> Intel
     Intel --> Report
-```    
+```
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -138,7 +138,7 @@ graph TD
     L --> M[ProviderChain catches → next provider → HeuristicProvider]
     M --> N[AIResponse.ok → caller receives clean string]
     K --> N
-```    
+```
 
 ```
 API Key
@@ -182,7 +182,7 @@ graph TD
     D --> E{Any models left?}
     E -- Yes --> F[Select first model; log 'GeminiProvider initialised with model: X']
     E -- No --> G[Raise ProviderError (fail loudly)]
-```    
+```
 
 ```
 client.models.list()
@@ -213,7 +213,7 @@ graph TD
     Outcome -->|ProviderError| PE[ProviderChain logs warning, advances to next provider]
     Outcome -->|Empty response| Empty[Log warning, return AIResponse(ok=False)]
     Outcome -->|HeuristicProvider| Heur[Deterministic summary, always succeeds, never raises]
-```    
+```
 
 ```
 AI call
@@ -240,7 +240,7 @@ graph TD
     F -- No --> H[HeuristicProvider.generate_executive_summary() → deterministic summary]
     G --> I[Return summary]
     H --> I
-```    
+```
 
 ```
 generate_executive_summary(scan_results)
@@ -286,7 +286,7 @@ graph TD
     AdvancedIntelligence --> RiskScorer[RiskScorer v2<br/>risk_score (0-10)]
     RiskScorer -->|risk_score| ProviderChain[ProviderChain.generate_executive_summary]
     ProviderChain --> ReportGenerator[ReportGenerator<br/>.json + .html + .md]
-```    
+```
 
 ```
 URL
@@ -347,7 +347,7 @@ graph TD
     cloudaudit --> openai
     cloudaudit --> anthropic
     cloudaudit --> py7zr
-```    
+```
 
 ```
 cloudaudit
