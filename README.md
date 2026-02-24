@@ -29,7 +29,7 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
 <p align="center">
 
 <a href="https://discord.gg/QtN6fEeSkP">
-  <img src="https://img.shields.io/discord/1179891851252207716?style=for-the-badge&logo=discord&label=Join%20Discord&color=5865F2">
+  <img src="https://img.shields.io/discord/1179891851252207716?style=for-the-badge&logo=discord&label=Join%20CloudAudit%20Community&color=5865F2">
 </a>
 
 </p>
