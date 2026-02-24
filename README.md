@@ -764,6 +764,8 @@ CloudAudit is intended for use **only** on cloud storage resources you own or ha
 
 By using `--confirm-ownership`, you declare that you are authorised to audit the target resource and accept full legal responsibility for your use of this tool.
 
+![License](https://img.shields.io/badge/license-MIT-blue)
+
 ---
 
 ## Author
