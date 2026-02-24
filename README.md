@@ -24,6 +24,15 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
 [![Security](https://img.shields.io/badge/security-hardened-success?style=flat-square&logo=springsecurity)](#)
 [![Maintained](https://img.shields.io/badge/maintained-yes-brightgreen?style=flat-square)](#)
 [![AI Powered](https://img.shields.io/badge/AI-Gemini%20%7C%20GPT--4o%20%7C%20Claude-blueviolet?style=flat-square&logo=googlegemini)](#)
+[![License](https://img.shields.io/badge/license-MIT-blue)](#)
+
+<p align="center">
+
+<a href="https://discord.gg/QtN6fEeSkP">
+  <img src="https://img.shields.io/discord/1179891851252207716?style=for-the-badge&logo=discord&label=Join%20Discord&color=5865F2">
+</a>
+
+</p>
 
 > **Developed by xtawb** | [https://linktr.ee/xtawb](https://linktr.ee/xtawb) | [GitHub](https://github.com/xtawb/cloudaudit)
 
