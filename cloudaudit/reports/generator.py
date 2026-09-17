@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from cloudaudit.core.models import ScanStats
 from cloudaudit.core.constants import __version__, __tool_name__, __author__, __author_url__, __tagline__, __github_repo__
+from cloudaudit.core.exceptions import ReportError
 from cloudaudit.utils.helpers import finding_fingerprint as _finding_fp
 
 _SEV_COLORS = {
@@ -361,34 +362,70 @@ footer strong{{color:#718096}}
             writer.writerow(row)
         return buf.getvalue()
 
+    # ── PDF (optional dependency: xhtml2pdf) ───────────────────────────────────
+
+    @classmethod
+    def pdf(cls, stats: ScanStats, org: str = "") -> bytes:
+        """
+        Render the same content as the HTML report to PDF.
+
+        Uses the optional ``xhtml2pdf`` dependency (pure-Python, no native
+        libraries required) to convert the existing HTML report template.
+        Raises ``ReportError`` with a clear, actionable message if the
+        dependency isn't installed rather than failing with an ImportError
+        deep in report generation.
+        """
+        try:
+            from xhtml2pdf import pisa  # type: ignore[import]
+        except ImportError as exc:
+            raise ReportError(
+                "PDF export requires the optional 'xhtml2pdf' package. "
+                "Install with: pip install xhtml2pdf  (or: pip install cloudaudit[pdf])"
+            ) from exc
+
+        html_content = cls.html(stats, org=org)
+        buf = io.BytesIO()
+        result = pisa.CreatePDF(src=html_content, dest=buf, encoding="utf-8")
+        if result.err:
+            raise ReportError(f"Failed to render PDF report ({result.err} error(s) from xhtml2pdf).")
+        return buf.getvalue()
+
     # ── Convenience: write every requested format to disk ─────────────────────
 
     _EXT_FOR_FORMAT = {
         "json": ".json", "html": ".html", "markdown": ".md", "md": ".md",
-        "sarif": ".sarif", "csv": ".csv",
+        "sarif": ".sarif", "csv": ".csv", "pdf": ".pdf",
     }
+
+    # PDF is deliberately excluded from "all" — it requires the optional
+    # xhtml2pdf dependency and must be requested explicitly with --format pdf.
+    _ALL_FORMATS = ["json", "html", "markdown", "sarif", "csv"]
 
     @classmethod
     def write_all(cls, stats: ScanStats, base_path, fmt: str, org: str = "") -> List[Any]:
         """
         Write the requested report format(s) to disk next to ``base_path``
         (extension is replaced/added per format). ``fmt`` is one of
-        json/html/markdown/sarif/csv/all. Returns the list of paths written.
+        json/html/markdown/sarif/csv/pdf/all. Returns the list of paths written.
         """
         from pathlib import Path
         base = Path(base_path)
         written: List[Path] = []
         generators = {
             "json": cls.json, "html": cls.html, "markdown": cls.markdown,
-            "md": cls.markdown, "sarif": cls.sarif, "csv": cls.csv,
+            "md": cls.markdown, "sarif": cls.sarif, "csv": cls.csv, "pdf": cls.pdf,
         }
-        formats = ["json", "html", "markdown", "sarif", "csv"] if fmt == "all" else [fmt]
+        formats = cls._ALL_FORMATS if fmt == "all" else [fmt]
         for f in formats:
             gen = generators.get(f)
             if not gen:
                 continue
             p = base.with_suffix(cls._EXT_FOR_FORMAT.get(f, f".{f}"))
-            p.write_text(gen(stats, org=org), encoding="utf-8")
+            content = gen(stats, org=org)
+            if isinstance(content, bytes):
+                p.write_bytes(content)
+            else:
+                p.write_text(content, encoding="utf-8")
             written.append(p)
         return written
 

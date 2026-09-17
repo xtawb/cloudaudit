@@ -5,6 +5,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] — 2026
+
+### Added
+
+* **PDF report export** — `--format pdf` renders the existing HTML report to
+  PDF via the optional `xhtml2pdf` dependency (`pip install cloudaudit[pdf]`),
+  failing with a clear install hint rather than silently producing nothing
+  if the dependency is missing.
+* **Continuous / interval scan mode** — `--interval SECONDS` re-runs the same
+  scan on a timer until interrupted (Ctrl+C), logging each run to local scan
+  history for drift detection.
+* **Structured Terraform state scanning** — `intelligence/terraform_scanner.py`
+  parses `.tfstate` files as JSON (not just regex) and flags sensitive
+  attribute names under `resources[].instances[].attributes`, tagging each
+  finding with the Terraform resource address.
+* **CI workflow scaffold generator** — `cloudaudit init-ci` writes a
+  ready-to-use GitHub Actions workflow that runs CloudAudit with
+  `--format sarif` and uploads results via `github/codeql-action/upload-sarif`.
+* **Named config profiles** — `cloudaudit config --save-profile NAME` saves
+  the current scan flags to `~/.cloudaudit/profiles/<name>.yml`;
+  `--profile NAME` loads one, with explicit CLI flags always taking
+  precedence. API keys, target URL, output path, and ownership flags are
+  never persisted to a profile.
+* **Scanner plugin system** — `scanners/plugin_loader.py` discovers
+  third-party scanners registered via the `cloudaudit.scanners` Python
+  entry-point group and runs them alongside the built-in scanners during
+  Phase 4 content analysis.
+* **Live terminal dashboard** — `--tui` shows a real-time `rich.live`
+  dashboard (files crawled, findings by severity, current phase) as an
+  alternative to the phase-based terminal output.
+* **Self-test command** — `cloudaudit selftest` runs the secret scanner and
+  redaction pipeline against built-in synthetic known-bad samples and prints
+  PASS/FAIL per check, so you can sanity-check detection after installing
+  or upgrading.
+* **Slack-formatted executive summary** — `--slack-summary` (or
+  `--webhook-format slack`, or auto-detection of `hooks.slack.com` in
+  `--webhook-url`) posts a Slack Block Kit–formatted summary in addition to
+  the existing generic webhook JSON payload.
+* **Exposure trend delta** — when local scan history has a previous scan of
+  the same target, the executive summary (AI or heuristic) now reports the
+  change since that scan (new/resolved findings, risk score delta).
+
+### Fixed
+
+* **ReadTheDocs site was mostly empty** — the live site
+  (https://cloudaudit.readthedocs.io) is built with MkDocs
+  (`.readthedocs.yaml` uses the `mkdocs:` builder), but nine of the twelve
+  pages MkDocs actually serves (`installation.md`, `configuration.md`,
+  `architecture.md`, `ai-engine.md`, `detection-algorithms.md`,
+  `risk-engine.md`, `reporting.md`, `update-system.md`, `contributing.md`)
+  were near-empty placeholders pointing at a parallel set of `.rst`
+  (Sphinx) files that were never built. All nine pages now carry real,
+  current content; the unused `docs/*.rst` files and `docs/conf.py` have
+  been removed to eliminate the dead duplicate documentation system. Added
+  a new `docs/cli-reference.md` page and a `docs/changelog.md` page (linked
+  from a new "Releases" nav section alongside the GitHub Releases page).
+* **Inconsistent license badges** — README showed both a "Proprietary" and
+  an "MIT" badge; standardised on MIT, matching the repository's `LICENSE`
+  file.
+
+---
+
 ## [1.1.0] — 2026
 
 ### Added

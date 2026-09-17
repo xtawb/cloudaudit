@@ -1,6 +1,6 @@
 """cloudaudit — Framework Constants"""
 
-__version__     = "1.1.0"
+__version__     = "1.2.0"
 __tool_name__   = "CloudAudit"
 __author__      = "xtawb"
 __author_url__  = "https://linktr.ee/xtawb"
@@ -128,3 +128,9 @@ DOCKER_AUTH_URL             = "https://auth.docker.io/token"
 MAX_DOCKER_LAYER_SIZE       = 250 * 1024 * 1024
 
 SEVERITY_ORDER = ["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"]
+
+# ── New in v1.2.0 ────────────────────────────────────────────────────────────
+PROFILES_DIR                = "~/.cloudaudit/profiles"
+DEFAULT_MIN_SCAN_INTERVAL   = 30.0     # smallest allowed --interval, in seconds
+SCANNER_PLUGIN_ENTRY_POINT_GROUP = "cloudaudit.scanners"
+TERRAFORM_STATE_SUFFIXES    = (".tfstate", ".tfstate.backup")

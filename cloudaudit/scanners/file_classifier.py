@@ -104,6 +104,12 @@ class FileClassifier:
         name = path.name.lower()
         ext  = path.suffix.lower()
 
+        # Terraform state files (terraform.tfstate, terraform.tfstate.backup, foo.tfstate, ...)
+        # — Path.suffix only ever returns the last dotted segment, so ".tfstate.backup"
+        # can't be matched via the extension map; check the full filename explicitly.
+        if name.endswith((".tfstate", ".tfstate.backup")):
+            return FileType.TERRAFORM
+
         # Check special names first
         if name in _SPECIAL_NAMES:
             return _SPECIAL_NAMES[name]

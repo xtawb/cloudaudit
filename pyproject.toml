@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloudaudit"
-version = "1.1.0"
+version = "1.2.0"
 description = "Enterprise Cloud Storage Posture Auditing Framework — Read-Only Defensive"
 requires-python = ">=3.11"
 authors = [{ name = "Your Org Security Team" }]
-license = { text = "Proprietary" }
+license = { text = "MIT" }
 dependencies = [
     "aiohttp>=3.9",
     "aiofiles>=23.0",
@@ -16,7 +16,7 @@ dependencies = [
     "Pillow>=10.0",      # EXIF extraction
     "cryptography>=41.0",
     "pyyaml>=6.0",
-    "rich>=13.0",        # Terminal UI
+    "rich>=13.0",        # Terminal UI + --tui live dashboard
     "jinja2>=3.1",       # HTML report templating
     "google-genai>=0.8; extra == 'gemini'",
     "openai>=1.0; extra == 'openai'",
@@ -26,7 +26,8 @@ dependencies = [
 gemini = ["google-genai>=0.8"]
 openai = ["openai>=1.0"]
 aws = ["boto3>=1.28"]
-all = ["google-genai>=0.8", "openai>=1.0", "boto3>=1.28"]
+pdf = ["xhtml2pdf>=0.2.11"]
+all = ["google-genai>=0.8", "openai>=1.0", "boto3>=1.28", "xhtml2pdf>=0.2.11"]
 
 [project.scripts]
 cloudaudit = "cloudaudit.cli.main:main"

@@ -125,16 +125,41 @@ class HistoryStore:
                 ).fetchall()
             finally:
                 conn.close()
-            return [
-                ScanHistoryEntry(
-                    id=r["id"], timestamp=r["timestamp"], target=r["target"], org=r["org"],
-                    risk_score=r["risk_score"], total_files=r["total_files"],
-                    total_findings=r["total_findings"], critical=r["critical"],
-                    high=r["high"], medium=r["medium"], low=r["low"],
-                    informational=r["informational"], suppressed=r["suppressed"],
-                )
-                for r in rows
-            ]
+            return [self._row_to_entry(r) for r in rows]
         except Exception as exc:
             logger.warning("Failed to read scan history: %s", exc)
             return []
+
+    def list_for_target(self, target: str, limit: int = 5) -> List[ScanHistoryEntry]:
+        """
+        Most recent recorded scans for an exact target URL, newest first.
+
+        Used to compute the exposure trend delta shown in the executive
+        summary (v1.2.0) — e.g. "3 new critical findings since last scan".
+        Never raises; returns an empty list on any failure or if this is
+        the first scan of this target.
+        """
+        try:
+            conn = self._connect()
+            try:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM scans WHERE target = ? ORDER BY id DESC LIMIT ?",
+                    (target, limit),
+                ).fetchall()
+            finally:
+                conn.close()
+            return [self._row_to_entry(r) for r in rows]
+        except Exception as exc:
+            logger.warning("Failed to read scan history for target: %s", exc)
+            return []
+
+    @staticmethod
+    def _row_to_entry(r: sqlite3.Row) -> ScanHistoryEntry:
+        return ScanHistoryEntry(
+            id=r["id"], timestamp=r["timestamp"], target=r["target"], org=r["org"],
+            risk_score=r["risk_score"], total_files=r["total_files"],
+            total_findings=r["total_findings"], critical=r["critical"],
+            high=r["high"], medium=r["medium"], low=r["low"],
+            informational=r["informational"], suppressed=r["suppressed"],
+        )

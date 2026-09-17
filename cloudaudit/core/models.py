@@ -183,6 +183,7 @@ class ScanStats:
     start_time:        float = field(default_factory=time.time)
     exposed_files:     List[ExposedFile] = field(default_factory=list)
     suppressed_count:  int = 0       # Findings suppressed via --baseline (accepted risk)
+    trend_summary:     str = ""      # Exposure trend vs. previous scan of this target (v1.2.0)
 
     def to_dict(self) -> Dict[str, Any]:
         elapsed = round(time.time() - self.start_time, 2)
@@ -198,4 +199,5 @@ class ScanStats:
             "risk_score":    self.risk_score,
             "elapsed_sec":   elapsed,
             "suppressed_count": self.suppressed_count,
+            "trend_summary": self.trend_summary,
         }

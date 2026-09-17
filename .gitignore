@@ -12,3 +12,4 @@ __pycache__/
 # CloudAudit local state
 .cloudaudit/
 *.checkpoint.json
+*.egg-info/

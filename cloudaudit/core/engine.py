@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from cloudaudit.core.config import AuditConfig
 from cloudaudit.core.exceptions import AuditError, OwnershipError
@@ -40,11 +40,13 @@ from cloudaudit.ai.analyzer import AIFileAnalyzer, AnomalyScorer
 from cloudaudit.core import checkpoint as checkpoint_mod
 from cloudaudit.core.constants import CHECKPOINT_SAVE_INTERVAL
 from cloudaudit.intelligence.baseline import apply_baseline, load_baseline
+from cloudaudit.intelligence.terraform_scanner import TerraformStateScanner
 from cloudaudit.reports.generator import ReportGenerator
 from cloudaudit.scanners.archive_extractor import ArchiveExtractor
 from cloudaudit.scanners.container_detector import ContainerDetector
 from cloudaudit.scanners.crawler import FileCrawler
 from cloudaudit.scanners.file_classifier import FileClassifier
+from cloudaudit.scanners.plugin_loader import discover_plugins, run_plugins
 from cloudaudit.scanners.secret_scanner import SecretScanner, load_custom_patterns
 from cloudaudit.utils.helpers import human_size, url_filename
 from cloudaudit.utils.http_client import HTTPClient
@@ -56,11 +58,15 @@ _SEV_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3, "Informational": 
 
 class AuditEngine:
 
-    def __init__(self, config: AuditConfig, display=None) -> None:
+    def __init__(
+        self, config: AuditConfig, display=None,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> None:
         config.validate()
         self._config    = config
         self._stats     = ScanStats()
         self._display   = display   # PhaseDisplay or None
+        self._on_progress = on_progress  # optional --tui live dashboard callback (v1.2.0)
         self._detector  = ContainerDetector()
         self._crawler   = FileCrawler(config)
 
@@ -68,6 +74,7 @@ class AuditEngine:
         if config.custom_patterns_path:
             custom_patterns = load_custom_patterns(config.custom_patterns_path)
         self._secret    = SecretScanner(min_entropy=config.min_entropy, custom_patterns=custom_patterns)
+        self._terraform = TerraformStateScanner()
 
         self._entropy   = EntropyHunter()
         self._archive   = ArchiveExtractor()
@@ -80,9 +87,22 @@ class AuditEngine:
         self._ai_analyzer: Optional[AIFileAnalyzer] = None
         self._anomaly: Optional[AnomalyScorer] = None
 
+        # Third-party scanner plugins (cloudaudit.scanners entry point group, v1.2.0)
+        self._plugins = discover_plugins()
+
         self._resumed_analysed_urls: set[str] = set()
         self._analysed_urls: set[str] = set()
         self._analysed_since_checkpoint = 0
+
+    # ── Progress reporting (--tui live dashboard) ─────────────────────────────
+
+    def _report_progress(self, **kwargs: Any) -> None:
+        if not self._on_progress:
+            return
+        try:
+            self._on_progress(kwargs)
+        except Exception:
+            pass  # A misbehaving dashboard must never affect the scan itself.
 
     # ── Entry point ────────────────────────────────────────────────────────────
 
@@ -106,6 +126,7 @@ class AuditEngine:
             else:
                 container = await self._phase_detect(http)
             self._stats.container_info = container
+            self._report_progress(phase="Detecting container", container=container.container_type.value)
 
             if resumed and resumed["crawl_complete"]:
                 exposed_files = resumed["exposed_files"]
@@ -114,6 +135,7 @@ class AuditEngine:
                 exposed_files = await self._phase_crawl(http, container)
             self._stats.total_files   = len(exposed_files)
             self._stats.exposed_files = exposed_files
+            self._report_progress(phase="Discovering file inventory", total_files=len(exposed_files))
 
             # Cloud misconfiguration analysis (metadata-level)
             self._phase_misconfig(container, exposed_files)
@@ -133,9 +155,73 @@ class AuditEngine:
         self._apply_baseline()
         self._apply_min_severity()
         self._phase_score()
+        self._report_progress(
+            phase="Computing risk score",
+            scanned_files=self._stats.scanned_files,
+            risk_score=self._stats.risk_score,
+            severity_counts=self._severity_counts(),
+        )
+        self._compute_trend()
         if not self._config.dry_run:
             await self._phase_ai_summary()
+        self._report_progress(phase="Audit complete")
         return self._stats
+
+    def _severity_counts(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for f in self._stats.findings:
+            counts[f.severity.value] = counts.get(f.severity.value, 0) + 1
+        return counts
+
+    # ── Exposure trend vs. previous scan of this target (v1.2.0) ──────────────
+
+    def _compute_trend(self) -> None:
+        """
+        Look up the most recent locally-recorded scan of this same target
+        (from ~/.cloudaudit/history.db) and, if found, record a short
+        human-readable trend delta on ScanStats.trend_summary — e.g.
+        "3 new critical findings since last scan on 2026-08-01, 2 resolved".
+
+        This is a lightweight aggregate-count comparison, not a fingerprint
+        diff (see the `cloudaudit diff` subcommand for that) — it exists to
+        give the executive summary useful context without requiring the
+        user to keep old reports around. Never raises.
+        """
+        if getattr(self._config, "record_history", True) is False:
+            return
+        try:
+            from cloudaudit.config_mgr.history import HistoryStore
+            prev_entries = HistoryStore().list_for_target(self._config.url, limit=1)
+        except Exception as exc:
+            logger.debug("Trend lookup failed: %s", exc)
+            return
+        if not prev_entries:
+            return
+
+        prev = prev_entries[0]
+        cur = self._severity_counts()
+        deltas: List[str] = []
+        for sev, prev_n in (
+            ("Critical", prev.critical), ("High", prev.high),
+            ("Medium", prev.medium), ("Low", prev.low),
+        ):
+            cur_n = cur.get(sev, 0)
+            diff = cur_n - prev_n
+            if diff > 0:
+                deltas.append(f"{diff} new {sev.lower()}")
+            elif diff < 0:
+                deltas.append(f"{-diff} resolved {sev.lower()}")
+
+        if deltas:
+            self._stats.trend_summary = (
+                f"Since the previous scan of this target on {prev.timestamp}: "
+                + ", ".join(deltas) + "."
+            )
+        else:
+            self._stats.trend_summary = (
+                f"No change in finding counts since the previous scan of this target "
+                f"on {prev.timestamp}."
+            )
 
     # ── Minimum severity filter ────────────────────────────────────────────────
 
@@ -374,6 +460,24 @@ class AuditEngine:
                 # Deterministic secret scanning
                 det_findings = self._secret.scan(content, ef.url, ft)
 
+                # Dedicated Terraform state scanner — walks resources[].instances[].attributes
+                # structurally instead of relying only on generic regex/entropy matching.
+                if ft == FileType.TERRAFORM and url_filename(ef.url).lower().endswith(
+                    (".tfstate", ".tfstate.backup")
+                ):
+                    tf_findings = self._terraform.scan(content, ef.url)
+                    for tf in tf_findings:
+                        self._deduper.register(tf)
+                    det_findings.extend(tf_findings)
+
+                # Third-party scanner plugins (cloudaudit.scanners entry points)
+                if self._plugins:
+                    file_meta = {"url": ef.url, "file_name": url_filename(ef.url), "file_type": ft}
+                    plugin_findings = run_plugins(self._plugins, content, file_meta)
+                    for pf in plugin_findings:
+                        self._deduper.register(pf)
+                    det_findings.extend(plugin_findings)
+
                 # Entropy analysis
                 entropy_hits = self._entropy.scan(content, threshold=self._config.min_entropy)
                 for hit in entropy_hits:
@@ -402,6 +506,12 @@ class AuditEngine:
 
                 self._stats.findings.extend(det_findings)
                 self._stats.scanned_files += 1
+                self._report_progress(
+                    phase="Analysing file contents",
+                    scanned_files=self._stats.scanned_files,
+                    total_files=self._stats.total_files,
+                    severity_counts=self._severity_counts(),
+                )
 
                 # AI semantic analysis (only for high-value files)
                 if (

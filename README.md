@@ -15,16 +15,15 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
        
 ```
 
-[![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square&logo=git)](#)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue?style=flat-square&logo=git)](#)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white)](#)
-[![License](https://img.shields.io/badge/license-Proprietary-red?style=flat-square)](#)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#)
 [![Docs](https://img.shields.io/readthedocs/cloudaudit?style=flat-square&logo=readthedocs)](#)
 [![Mode](https://img.shields.io/badge/mode-read--only-green?style=flat-square&logo=shield)](#)
 [![Code Style](https://img.shields.io/badge/code%20style-ruff-black?style=flat-square)](#)
 [![Security](https://img.shields.io/badge/security-hardened-success?style=flat-square&logo=springsecurity)](#)
 [![Maintained](https://img.shields.io/badge/maintained-yes-brightgreen?style=flat-square)](#)
 [![AI Powered](https://img.shields.io/badge/AI-Gemini%20%7C%20GPT--4o%20%7C%20Claude-blueviolet?style=flat-square&logo=googlegemini)](#)
-[![License](https://img.shields.io/badge/license-MIT-blue)](#)
 
 <p align="center">
 
@@ -508,13 +507,21 @@ pip install anthropic          # Anthropic Claude
 pip install Pillow             # Image EXIF metadata analysis
 pip install cryptography       # Encrypted local API key storage
 pip install py7zr              # 7-Zip archive extraction
-pip install boto3              # --aws-acl-check (real S3 ACL/policy inspection)
+pip install boto3               # --aws-acl-check (real S3 ACL/policy inspection)
+pip install xhtml2pdf          # --format pdf
+```
+
+All-in-one, with every optional feature installed:
+
+```bash
+pip install cloudaudit[all]
 ```
 
 `--custom-patterns` and `--baseline` (when given a `.yml`/`.yaml` file) use
-`pyyaml`, already a core dependency. Local scan history (`cloudaudit history`)
-and resume/checkpoint support use only the Python standard library
-(`sqlite3`, `json`) — no extra install required.
+`pyyaml`, already a core dependency. Local scan history (`cloudaudit history`),
+resume/checkpoint support, named config profiles (`--profile`), and the
+`--tui` live dashboard use only the Python standard library and `rich`
+(already a core dependency) — no extra install required.
 
 ---
 
@@ -694,6 +701,65 @@ cloudaudit diff reports/audit_jan.json reports/audit_feb.json
 cloudaudit history --limit 10
 ```
 
+### PDF Report Export
+
+```bash
+pip install cloudaudit[pdf]
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --format pdf -o reports/audit
+```
+
+### Continuous / Interval Scanning (Drift Detection)
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --interval 3600 -o reports/drift
+# Re-scans every hour until Ctrl+C, recording each run to local history.
+```
+
+### CI Workflow Scaffold
+
+```bash
+cloudaudit init-ci
+# Writes .github/workflows/cloudaudit.yml — runs cloudaudit with
+# --format sarif and uploads results via github/codeql-action/upload-sarif.
+```
+
+### Named Config Profiles
+
+```bash
+cloudaudit --extract-archives --threads 20 --format sarif \
+           config --save-profile ci
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --profile ci
+```
+
+### Live Terminal Dashboard
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --tui
+```
+
+### Self-Test (Verify Detection & Redaction After Install/Upgrade)
+
+```bash
+cloudaudit selftest
+```
+
+### Slack-Formatted Executive Summary
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --webhook-url https://hooks.slack.com/services/... \
+           --slack-summary
+```
+
 ---
 
 ## CLI Reference
@@ -729,8 +795,13 @@ cloudaudit history --limit 10
 | `--batch-concurrency N` | 1 | Targets scanned concurrently with `--targets-file` |
 | `--scan-docker-image REF` | | Read-only scan of a container image's layers for secrets (no `-u` required) |
 | `--webhook-url URL` | | POST a redacted scan summary to a Slack/Discord-compatible webhook |
+| `--webhook-format {auto,slack,generic}` | `auto` | Force Slack Block Kit or generic JSON payload (auto-detects `hooks.slack.com`) |
+| `--slack-summary` | off | Post a richly formatted Slack Block Kit executive summary to `--webhook-url` |
 | `--fail-on-severity LEVEL` | | Exit non-zero if any finding at/above `low`/`medium`/`high`/`critical` is present |
 | `--no-history` | off | Don't record this scan in `~/.cloudaudit/history.db` |
+| `--interval SECONDS` | | Repeat the scan on a timer until interrupted (Ctrl+C) — drift detection |
+| `--tui` | off | Live `rich`-based terminal dashboard instead of phase-based output |
+| `--profile NAME` | | Load a named config profile (`~/.cloudaudit/profiles/<name>.yml`); explicit flags override it |
 
 ### AI Provider
 
@@ -747,19 +818,22 @@ cloudaudit history --limit 10
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o`, `--output BASE` | | Output base filename |
-| `--format FORMAT` | `all` | `json` / `html` / `markdown` / `sarif` / `csv` / `all` |
+| `--format FORMAT` | `all` | `json` / `html` / `markdown` / `sarif` / `csv` / `pdf` / `all` (`pdf` requires `cloudaudit[pdf]`) |
 | `-v`, `--verbose` | off | Verbose output including AI summary |
 | `-d`, `--debug` | off | Full debug with stack traces |
 | `-q`, `--quiet` | off | Suppress all terminal output |
-| `--no-update-check` | off | Skip GitHub update check |
+| `--no-update` | off | Skip GitHub update check |
 
 ### Subcommands
 
 | Subcommand | Description |
 |------------|-------------|
 | `cloudaudit config --set-api / --list-providers / --remove-api` | Manage encrypted API keys |
+| `cloudaudit config --save-profile NAME / --list-profiles` | Save current flags as a named profile, or list saved profiles |
 | `cloudaudit diff <old_report.json> <new_report.json>` | Print new / resolved / unchanged findings between two JSON reports |
 | `cloudaudit history [--limit N]` | List locally recorded past scans from `~/.cloudaudit/history.db` |
+| `cloudaudit init-ci [--output PATH] [--schedule CRON]` | Write a ready-to-use GitHub Actions workflow (SARIF scan + upload) |
+| `cloudaudit selftest` | Run the secret scanner and redaction pipeline against known-bad synthetic samples; prints PASS/FAIL |
 
 ---
 
@@ -848,7 +922,7 @@ Override: Any cloud credential finding (AWS, GCP, Azure, GitHub) forces minimum 
 CloudAudit checks [GitHub releases](https://github.com/xtawb/cloudaudit/releases/latest) at startup:
 
 ```
-A new version is available (v1.0.2).
+A new version is available (v1.3.0).
 Do you want to update now? [Y/n]:
 ```
 
@@ -871,6 +945,11 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 - ~~SARIF output format for GitHub Advanced Security~~ — shipped in v1.1.0 (`--format sarif`)
 - ~~Multi-bucket batch scanning mode~~ — shipped in v1.1.0 (`--targets-file`)
 - ~~Docker image layer scanning~~ — shipped in v1.1.0 (`--scan-docker-image`)
+- ~~PDF report export~~ — shipped in v1.2.0 (`--format pdf`)
+- ~~Structured Terraform state scanning~~ — shipped in v1.2.0 (automatic on `*.tfstate`)
+- ~~CI workflow scaffolding~~ — shipped in v1.2.0 (`cloudaudit init-ci`)
+- ~~Named config profiles~~ — shipped in v1.2.0 (`--profile`)
+- ~~Third-party scanner plugin system~~ — shipped in v1.2.0 (`cloudaudit.scanners` entry points)
 - Jira/ServiceNow automatic ticket creation
 - Kubernetes secret/ConfigMap scanning for cluster-adjacent exposure
 
@@ -895,5 +974,5 @@ By using `--confirm-ownership`, you declare that you are authorised to audit the
 
 ---
 
-*CloudAudit v1.1.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
+*CloudAudit v1.2.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
 *Powered by xtawb | Defensive. Intelligent. Enterprise-Grade.*

@@ -15,11 +15,11 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
          
 ```
 
-[![Version](https://img.shields.io/badge/version-1.0.2-blue)](#)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue)](#)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](#)
 [![Mode](https://img.shields.io/badge/mode-read--only-green)](#)
 [![Docs](https://img.shields.io/readthedocs/cloudaudit)](#)
-[![License](https://img.shields.io/badge/license-Proprietary-red)](#)
+[![License](https://img.shields.io/badge/license-MIT-blue)](#)
 
 > **Developed by xtawb** | [https://linktr.ee/xtawb](https://linktr.ee/xtawb)
 
@@ -49,4 +49,6 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
 - **Secrets never stored raw** — all matches are redacted before write or transmission
 - **No exploitation guidance** — AI providers are prompted for defensive output only
 
-Navigate the documentation using the tabs above.
+Navigate the documentation using the tabs above — start with
+[Installation](installation.md) and the [CLI Reference](cli-reference.md),
+or see [Releases](changelog.md) for the full version history.

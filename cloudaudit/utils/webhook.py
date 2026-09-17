@@ -80,13 +80,98 @@ def build_payload(stats: ScanStats, target: str, org: str) -> dict:
     }
 
 
+def build_slack_payload(stats: ScanStats, target: str, org: str) -> dict:
+    """
+    Build a richer Slack Block Kit payload for the scan summary — used
+    instead of ``build_payload()`` when the webhook URL is detected (or
+    explicitly declared via ``--webhook-format slack`` / ``--slack-summary``)
+    to be a Slack incoming webhook.
+
+    Slack Block Kit reference: https://api.slack.com/block-kit
+    Contains only aggregate counts and already-redacted rule/file names —
+    never raw secret values.
+    """
+    sev_counts = {s.value: 0 for s in Severity}
+    for f in stats.findings:
+        sev_counts[f.severity.value] = sev_counts.get(f.severity.value, 0) + 1
+
+    risk_emoji = "🟥" if stats.risk_score >= 7 else "🟧" if stats.risk_score >= 4 else "🟩"
+    fallback_text = f"{__tool_name__} scan summary for {target} — risk {stats.risk_score:.1f}/10"
+
+    blocks: list = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{__tool_name__} Scan Summary", "emoji": True},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Target:*\n{target}"},
+                {"type": "mrkdwn", "text": f"*Organisation:*\n{org or 'N/A'}"},
+                {"type": "mrkdwn", "text": f"*Risk Score:*\n{risk_emoji} {stats.risk_score:.1f} / 10"},
+                {"type": "mrkdwn", "text": f"*Total Findings:*\n{len(stats.findings)}"},
+            ],
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Critical:*\n{sev_counts.get('Critical', 0)}"},
+                {"type": "mrkdwn", "text": f"*High:*\n{sev_counts.get('High', 0)}"},
+                {"type": "mrkdwn", "text": f"*Medium:*\n{sev_counts.get('Medium', 0)}"},
+                {"type": "mrkdwn", "text": f"*Low:*\n{sev_counts.get('Low', 0)}"},
+            ],
+        },
+    ]
+
+    if stats.trend_summary:
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Trend:* {stats.trend_summary}"},
+        })
+
+    if stats.suppressed_count:
+        blocks.append({
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Suppressed via baseline: {stats.suppressed_count}"}],
+        })
+
+    top_findings = sorted(stats.findings, key=lambda f: f.severity.int_value, reverse=True)[:5]
+    if top_findings:
+        blocks.append({"type": "divider"})
+        lines = "\n".join(
+            f"• *[{f.severity.value}]* `{f.rule_name}` — {f.file_name}" for f in top_findings
+        )
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Top Findings:*\n{lines}"},
+        })
+
+    blocks.append({
+        "type": "context",
+        "elements": [{
+            "type": "mrkdwn",
+            "text": f"{__tool_name__} — read-only defensive scan. Raw secret values are never sent.",
+        }],
+    })
+
+    return {"text": fallback_text, "blocks": blocks}
+
+
 def send_webhook(url: str, stats: ScanStats, target: str, org: str,
-                  timeout: Optional[float] = None) -> tuple[bool, str]:
+                  timeout: Optional[float] = None, fmt: Optional[str] = None) -> tuple[bool, str]:
     """
     POST a redacted scan summary to a Slack/Discord-compatible webhook URL.
+
+    ``fmt`` controls payload shape:
+      - "slack"           — always send a Slack Block Kit payload
+      - "generic" / None  — always send the plain text+content JSON payload
+      - "auto" (default when fmt is falsy) — send Block Kit automatically
+        when the URL looks like a Slack incoming webhook (hooks.slack.com)
+
     Never raises — returns (ok, message) so a failed notification never fails the scan.
     """
-    payload = build_payload(stats, target, org)
+    use_slack = (fmt == "slack") or (fmt in (None, "auto") and "hooks.slack.com" in url)
+    payload = build_slack_payload(stats, target, org) if use_slack else build_payload(stats, target, org)
     body = json.dumps(payload).encode("utf-8")
     try:
         req = urllib.request.Request(

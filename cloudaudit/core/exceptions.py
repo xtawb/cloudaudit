@@ -35,3 +35,7 @@ class ProviderAuthError(ProviderError):
 
 class ArchiveError(AuditError):
     """Archive extraction failure."""
+
+
+class ReportError(AuditError):
+    """Report generation/rendering failure (e.g. missing optional PDF dependency)."""
