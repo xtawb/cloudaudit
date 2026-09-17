@@ -40,6 +40,15 @@ _AWS_CF_HOST_RE   = re.compile(r"cloudfront\.net$")
 _GCS_HOST_RE      = re.compile(r"storage\.googleapis\.com|(?P<bucket>[^.]+)\.storage\.googleapis\.com")
 _AZURE_HOST_RE    = re.compile(r"(?P<account>[^.]+)\.blob\.core\.windows\.net")
 
+# GitLab generic package registry: gitlab.com/.../-/packages/generic/... or the
+# raw API form /api/v4/projects/:id/packages/generic/:name/:version/:file
+_GITLAB_PKG_RE    = re.compile(r"/-/packages/generic/|/api/v4/(?:projects|groups)/[^/]+/packages/generic/")
+_GITLAB_HOST_RE   = re.compile(r"(?:^|\.)gitlab\.[^./]+$|^gitlab\.com$")
+
+# Bitbucket "Downloads" section: bitbucket.org/<workspace>/<repo>/downloads/
+_BITBUCKET_DL_RE  = re.compile(r"/downloads/?($|[/?])")
+_BITBUCKET_HOST_RE = re.compile(r"(?:^|\.)bitbucket\.org$")
+
 
 class ContainerDetector:
     """
@@ -91,6 +100,20 @@ class ContainerDetector:
                 am = _AZURE_HOST_RE.search(host)
                 if am:
                     info.container_name = am.group("account")
+
+            elif _GITLAB_HOST_RE.search(host) and _GITLAB_PKG_RE.search(parsed.path):
+                info.container_type = ContainerType.GITLAB_PACKAGE_REGISTRY
+                info.notes.append(
+                    "Detected a GitLab generic package registry URL — package files may be "
+                    "publicly downloadable if the project/group visibility allows it."
+                )
+
+            elif _BITBUCKET_HOST_RE.search(host) and _BITBUCKET_DL_RE.search(parsed.path):
+                info.container_type = ContainerType.BITBUCKET_DOWNLOADS
+                info.notes.append(
+                    "Detected a Bitbucket repository Downloads section — files here are "
+                    "publicly downloadable if the repository is public."
+                )
 
         # ── 3. XML body fingerprinting (most reliable for content) ────────────
         if body.strip().startswith("<?xml") or body.strip().startswith("<"):

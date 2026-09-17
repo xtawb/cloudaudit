@@ -84,6 +84,17 @@ class AuditConfig:
     # ── Workspace ─────────────────────────────────────────────────────────────
     workspace: str = ARCHIVE_WORKSPACE
 
+    # ── v1.1.0 feature flags ──────────────────────────────────────────────────
+    baseline_path:        Optional[str] = None   # --baseline FILE (accepted-risk suppression)
+    custom_patterns_path: Optional[str] = None   # --custom-patterns FILE
+    checkpoint_path:      Optional[str] = None   # --checkpoint FILE (periodic progress save)
+    resume_path:          Optional[str] = None   # --resume FILE (continue an interrupted crawl)
+    dry_run:              bool = False           # --dry-run (enumerate only, no content analysis)
+    aws_acl_check:        bool = False           # --aws-acl-check (boto3 ACL/policy enrichment)
+    webhook_url:          Optional[str] = None   # --webhook-url URL
+    fail_on_severity:     Optional[str] = None   # --fail-on-severity {low,medium,high,critical}
+    record_history:       bool = True            # scan history is recorded unless disabled
+
     def validate(self) -> None:
         if not self.url:
             raise ConfigError("Target URL is required.")

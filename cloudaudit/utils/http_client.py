@@ -78,13 +78,21 @@ class HTTPClient:
     ) -> aiohttp.ClientResponse:
         return await self._request("OPTIONS", url, headers=headers)
 
-    async def download_bytes(self, url: str, max_bytes: int) -> bytes:
+    async def download_bytes(
+        self,
+        url: str,
+        max_bytes: int,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> bytes:
         """Stream-download up to max_bytes. Raises if over limit."""
         if self._session is None:
             raise AuditError("HTTPClient not started.")
         chunks: list[bytes] = []
         total = 0
-        async with self._session.get(url, headers={"User-Agent": _UA}) as resp:
+        req_headers = {"User-Agent": _UA}
+        if headers:
+            req_headers.update(headers)
+        async with self._session.get(url, headers=req_headers) as resp:
             if resp.status != 200:
                 raise AuditError(f"HTTP {resp.status} fetching {url}")
             async for chunk in resp.content.iter_chunked(65536):

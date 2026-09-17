@@ -37,12 +37,15 @@ from cloudaudit.intelligence.advanced import (
 )
 from cloudaudit.ai.providers import ProviderChain, build_provider_chain
 from cloudaudit.ai.analyzer import AIFileAnalyzer, AnomalyScorer
+from cloudaudit.core import checkpoint as checkpoint_mod
+from cloudaudit.core.constants import CHECKPOINT_SAVE_INTERVAL
+from cloudaudit.intelligence.baseline import apply_baseline, load_baseline
 from cloudaudit.reports.generator import ReportGenerator
 from cloudaudit.scanners.archive_extractor import ArchiveExtractor
 from cloudaudit.scanners.container_detector import ContainerDetector
 from cloudaudit.scanners.crawler import FileCrawler
 from cloudaudit.scanners.file_classifier import FileClassifier
-from cloudaudit.scanners.secret_scanner import SecretScanner
+from cloudaudit.scanners.secret_scanner import SecretScanner, load_custom_patterns
 from cloudaudit.utils.helpers import human_size, url_filename
 from cloudaudit.utils.http_client import HTTPClient
 
@@ -60,7 +63,12 @@ class AuditEngine:
         self._display   = display   # PhaseDisplay or None
         self._detector  = ContainerDetector()
         self._crawler   = FileCrawler(config)
-        self._secret    = SecretScanner(min_entropy=config.min_entropy)
+
+        custom_patterns = []
+        if config.custom_patterns_path:
+            custom_patterns = load_custom_patterns(config.custom_patterns_path)
+        self._secret    = SecretScanner(min_entropy=config.min_entropy, custom_patterns=custom_patterns)
+
         self._entropy   = EntropyHunter()
         self._archive   = ArchiveExtractor()
         self._image     = ImageMetaAnalyser()
@@ -72,28 +80,128 @@ class AuditEngine:
         self._ai_analyzer: Optional[AIFileAnalyzer] = None
         self._anomaly: Optional[AnomalyScorer] = None
 
+        self._resumed_analysed_urls: set[str] = set()
+        self._analysed_urls: set[str] = set()
+        self._analysed_since_checkpoint = 0
+
     # ── Entry point ────────────────────────────────────────────────────────────
 
     async def run(self) -> ScanStats:
         self._init_ai_provider()
 
+        resumed = None
+        if self._config.resume_path:
+            resumed = checkpoint_mod.load_checkpoint(self._config.resume_path)
+            logger.info(
+                "Resuming from checkpoint: %d file(s) previously discovered, "
+                "%d already analysed, %d finding(s) carried over",
+                len(resumed["exposed_files"]), len(resumed["analysed_urls"]), len(resumed["findings"]),
+            )
+            self._stats.findings.extend(resumed["findings"])
+            self._resumed_analysed_urls = resumed["analysed_urls"]
+
         async with HTTPClient(self._config) as http:
-            container     = await self._phase_detect(http)
+            if resumed and resumed["container"]:
+                container = resumed["container"]
+            else:
+                container = await self._phase_detect(http)
             self._stats.container_info = container
 
-            exposed_files = await self._phase_crawl(http, container)
+            if resumed and resumed["crawl_complete"]:
+                exposed_files = resumed["exposed_files"]
+                self._crawler.seed(exposed_files)
+            else:
+                exposed_files = await self._phase_crawl(http, container)
             self._stats.total_files   = len(exposed_files)
             self._stats.exposed_files = exposed_files
 
             # Cloud misconfiguration analysis (metadata-level)
             self._phase_misconfig(container, exposed_files)
 
-            await self._phase_analyse(http, exposed_files)
+            # Optional: enrich AWS S3 findings with real ACL/policy detail (boto3)
+            if self._config.aws_acl_check:
+                self._phase_aws_acl_check(container)
+
+            self._save_checkpoint(container, crawl_complete=True)
+
+            if self._config.dry_run:
+                logger.info("Dry run enabled — skipping content download/analysis for %d file(s)", len(exposed_files))
+            else:
+                await self._phase_analyse(http, exposed_files)
 
         self._phase_dedup()
+        self._apply_baseline()
+        self._apply_min_severity()
         self._phase_score()
-        await self._phase_ai_summary()
+        if not self._config.dry_run:
+            await self._phase_ai_summary()
         return self._stats
+
+    # ── Minimum severity filter ────────────────────────────────────────────────
+
+    def _apply_min_severity(self) -> None:
+        """
+        Apply --min-severity: findings below the configured threshold are
+        dropped from the report. This flag was previously parsed and stored
+        on AuditConfig but never actually consulted anywhere.
+        """
+        try:
+            threshold = Severity[self._config.min_severity.upper()]
+        except KeyError:
+            return
+        if threshold == Severity.LOW:
+            return  # LOW is the lowest real severity — nothing to filter (INFORMATIONAL findings are rare/synthetic)
+        before = len(self._stats.findings)
+        self._stats.findings = [
+            f for f in self._stats.findings if f.severity.int_value >= threshold.int_value
+        ]
+        dropped = before - len(self._stats.findings)
+        if dropped:
+            logger.info("Filtered %d finding(s) below --min-severity=%s", dropped, self._config.min_severity)
+
+    # ── Baseline suppression ──────────────────────────────────────────────────
+
+    def _apply_baseline(self) -> None:
+        if not self._config.baseline_path:
+            return
+        baseline = load_baseline(self._config.baseline_path)
+        kept, suppressed = apply_baseline(self._stats.findings, baseline)
+        self._stats.findings = kept
+        self._stats.suppressed_count = suppressed
+        if suppressed:
+            logger.info("Suppressed %d finding(s) via baseline %s", suppressed, self._config.baseline_path)
+
+    # ── AWS ACL/policy enrichment ──────────────────────────────────────────────
+
+    def _phase_aws_acl_check(self, container: ContainerInfo) -> None:
+        if container.container_type != ContainerType.AWS_S3 or not container.container_name:
+            return
+        from cloudaudit.intelligence import aws_acl
+        if not aws_acl.is_available():
+            logger.info("--aws-acl-check requested but boto3 is not installed — skipping.")
+            return
+        try:
+            findings = aws_acl.check_bucket(container.container_name, container.region, container.raw_url)
+            self._stats.findings.extend(findings)
+            if findings:
+                logger.info("AWS ACL/policy check added %d finding(s)", len(findings))
+        except Exception as exc:
+            logger.warning("AWS ACL/policy check failed: %s", exc)
+
+    # ── Checkpointing ──────────────────────────────────────────────────────────
+
+    def _save_checkpoint(self, container: Optional[ContainerInfo], crawl_complete: bool) -> None:
+        if not self._config.checkpoint_path:
+            return
+        checkpoint_mod.save_checkpoint(
+            self._config.checkpoint_path,
+            url=self._config.url,
+            container=container,
+            exposed_files=self._stats.exposed_files,
+            analysed_urls=sorted(self._analysed_urls),
+            findings=self._stats.findings,
+            crawl_complete=crawl_complete,
+        )
 
     # ── AI initialisation ──────────────────────────────────────────────────────
 
@@ -188,11 +296,16 @@ class AuditEngine:
     async def _phase_analyse(
         self, http: HTTPClient, files: List[ExposedFile]
     ) -> None:
-        logger.info("Phase 3-6: Analysing %d files", len(files))
+        pending = [ef for ef in files if ef.url not in self._resumed_analysed_urls]
+        skipped_resumed = len(files) - len(pending)
+        if skipped_resumed:
+            logger.info("Resume: skipping %d already-analysed file(s)", skipped_resumed)
+
+        logger.info("Phase 3-6: Analysing %d files", len(pending))
         sem   = asyncio.Semaphore(self._config.max_concurrent)
         tasks = [
             asyncio.create_task(self._analyse_one(http, sem, ef))
-            for ef in files
+            for ef in pending
         ]
         for coro in asyncio.as_completed(tasks):
             try:
@@ -206,6 +319,21 @@ class AuditEngine:
         )
 
     async def _analyse_one(
+        self, http: HTTPClient, sem: asyncio.Semaphore, ef: ExposedFile
+    ) -> None:
+        try:
+            await self._analyse_one_inner(http, sem, ef)
+        finally:
+            self._analysed_urls.add(ef.url)
+            self._analysed_since_checkpoint += 1
+            if (
+                self._config.checkpoint_path
+                and self._analysed_since_checkpoint >= CHECKPOINT_SAVE_INTERVAL
+            ):
+                self._analysed_since_checkpoint = 0
+                self._save_checkpoint(self._stats.container_info, crawl_complete=True)
+
+    async def _analyse_one_inner(
         self, http: HTTPClient, sem: asyncio.Semaphore, ef: ExposedFile
     ) -> None:
         async with sem:
@@ -232,11 +360,13 @@ class AuditEngine:
 
                 resp = await http.get(ef.url)
                 if resp.status != 200:
+                    resp.release()  # don't leak the connection back to the pool unread
                     return
 
                 cl = resp.headers.get("Content-Length")
                 if cl and int(cl) > self._config.max_file_size:
                     self._stats.skipped_files += 1
+                    resp.release()
                     return
 
                 content = await resp.text(errors="replace")
@@ -279,7 +409,7 @@ class AuditEngine:
                     and self._ai_analyzer.should_analyse_with_ai(ef.url, ft)
                     and (det_findings or ft in (FileType.ENVIRONMENT, FileType.CERTIFICATE))
                 ):
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     ai_findings = await loop.run_in_executor(
                         None,
                         self._ai_analyzer.analyse,
@@ -358,7 +488,7 @@ class AuditEngine:
         try:
             import json
             audit_json = json.dumps(self._stats.to_dict(), indent=2, default=str)[:12000]
-            loop    = asyncio.get_event_loop()
+            loop    = asyncio.get_running_loop()
             resp    = await loop.run_in_executor(
                 None,
                 self._provider_chain.generate_executive_summary,
@@ -377,21 +507,7 @@ class AuditEngine:
     def write_reports(self) -> List[Path]:
         if not self._config.output_base:
             return []
-        base    = Path(self._config.output_base)
-        fmt     = self._config.output_format
-        written: List[Path] = []
-
-        if fmt in ("json", "all"):
-            p = base.with_suffix(".json")
-            p.write_text(ReportGenerator.json(self._stats, org=self._config.owner_org), encoding="utf-8")
-            written.append(p)
-        if fmt in ("html", "all"):
-            p = base.with_suffix(".html")
-            p.write_text(ReportGenerator.html(self._stats, org=self._config.owner_org), encoding="utf-8")
-            written.append(p)
-        if fmt in ("markdown", "md", "all"):
-            p = base.with_suffix(".md")
-            p.write_text(ReportGenerator.markdown(self._stats, org=self._config.owner_org), encoding="utf-8")
-            written.append(p)
-
-        return written
+        return ReportGenerator.write_all(
+            self._stats, self._config.output_base, self._config.output_format,
+            org=self._config.owner_org,
+        )

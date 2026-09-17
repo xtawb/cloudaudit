@@ -17,6 +17,7 @@ Respects:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import xml.etree.ElementTree as ET
@@ -51,6 +52,10 @@ class FileCrawler:
         self._classifier = FileClassifier()
         self._discovered: List[ExposedFile] = []
         self._visited_urls: Set[str] = set()
+        # Bounds concurrent in-flight HTML directory crawls to config.max_concurrent
+        # (--concurrency / --threads) — previously the recursive HTML crawler issued
+        # unbounded concurrent requests via asyncio.gather regardless of this setting.
+        self._sem = asyncio.Semaphore(max(1, config.max_concurrent))
 
     async def crawl(
         self,
@@ -68,12 +73,18 @@ class FileCrawler:
             await self._crawl_s3_xml(http, base_url)
         elif container_type == ContainerType.AZURE_BLOB:
             await self._crawl_azure_xml(http, base_url)
+        elif container_type == ContainerType.GITLAB_PACKAGE_REGISTRY:
+            await self._crawl_gitlab_packages(http, base_url)
         else:
-            # Generic HTML directory listing or CloudFront
+            # Generic HTML directory listing, CloudFront, or Bitbucket downloads
             await self._crawl_html(http, base_url, depth=0)
 
         logger.info("Crawler finished: %d files discovered", len(self._discovered))
         return self._discovered
+
+    def seed(self, files: List[ExposedFile]) -> None:
+        """Seed the discovered list from a resumed checkpoint (skips a fresh crawl)."""
+        self._discovered = list(files)
 
     # ── AWS S3 / GCS XML crawler ───────────────────────────────────────────────
 
@@ -110,6 +121,7 @@ class FileCrawler:
                     resp = await http.get(list_url)
                     if resp.status != 200:
                         logger.warning("S3 listing returned HTTP %d for prefix=%r", resp.status, prefix)
+                        resp.release()
                         break
                     body = await resp.text(errors="replace")
                 except Exception as exc:
@@ -218,6 +230,7 @@ class FileCrawler:
             try:
                 resp = await http.get(list_url)
                 if resp.status != 200:
+                    resp.release()
                     break
                 body = await resp.text(errors="replace")
             except Exception as exc:
@@ -279,6 +292,71 @@ class FileCrawler:
 
         return files, next_marker
 
+    # ── GitLab generic package registry crawler ────────────────────────────────
+
+    async def _crawl_gitlab_packages(self, http: HTTPClient, base_url: str) -> None:
+        """
+        Best-effort enumeration of a GitLab generic package registry.
+
+        If the URL is a project/group API endpoint, list packages via the JSON
+        API and enumerate each package's files (read-only GETs only). If the
+        API shape doesn't match (e.g. a self-hosted instance exposing a plain
+        HTML index instead), fall back to generic HTML link crawling.
+        """
+        api_root_match = re.search(r"(.+/api/v4/(?:projects|groups)/[^/]+)/packages", base_url)
+        if not api_root_match:
+            await self._crawl_html(http, base_url, depth=0)
+            return
+
+        packages_url = f"{api_root_match.group(1)}/packages?per_page=100"
+        try:
+            resp = await http.get(packages_url)
+            if resp.status != 200:
+                resp.release()
+                await self._crawl_html(http, base_url, depth=0)
+                return
+            packages = json.loads(await resp.text(errors="replace"))
+        except Exception as exc:
+            logger.debug("GitLab package listing failed, falling back to HTML crawl: %s", exc)
+            await self._crawl_html(http, base_url, depth=0)
+            return
+
+        if not isinstance(packages, list):
+            await self._crawl_html(http, base_url, depth=0)
+            return
+
+        for pkg in packages:
+            pkg_id = pkg.get("id")
+            if pkg_id is None:
+                continue
+            files_url = f"{api_root_match.group(1)}/packages/{pkg_id}/package_files"
+            try:
+                fresp = await http.get(files_url)
+                if fresp.status != 200:
+                    fresp.release()
+                    continue
+                pkg_files = json.loads(await fresp.text(errors="replace"))
+            except Exception as exc:
+                logger.debug("GitLab package_files listing failed for package %s: %s", pkg_id, exc)
+                continue
+
+            for pf in pkg_files if isinstance(pkg_files, list) else []:
+                file_name = pf.get("file_name", "")
+                if not file_name:
+                    continue
+                download_url = (
+                    f"{base_url.rstrip('/')}/{pkg.get('name','')}/"
+                    f"{pkg.get('version','')}/{file_name}"
+                )
+                ef = ExposedFile(
+                    url=download_url,
+                    key=f"{pkg.get('name','')}/{pkg.get('version','')}/{file_name}",
+                    size_bytes=pf.get("size", 0) or 0,
+                    file_type=self._classifier.classify(file_name),
+                )
+                if self._should_include(ef):
+                    self._discovered.append(ef)
+
     # ── Generic HTML directory listing crawler ─────────────────────────────────
 
     async def _crawl_html(
@@ -291,14 +369,16 @@ class FileCrawler:
             return
         self._visited_urls.add(url)
 
-        try:
-            resp = await http.get(url)
-            if resp.status != 200:
+        async with self._sem:
+            try:
+                resp = await http.get(url)
+                if resp.status != 200:
+                    resp.release()
+                    return
+                html = await resp.text(errors="replace")
+            except Exception as exc:
+                logger.debug("HTML crawl error at %s: %s", url, exc)
                 return
-            html = await resp.text(errors="replace")
-        except Exception as exc:
-            logger.debug("HTML crawl error at %s: %s", url, exc)
-            return
 
         files, dirs = self._parse_html_links(html, url)
 

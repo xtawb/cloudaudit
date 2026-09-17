@@ -32,13 +32,16 @@ class Severity(str, Enum):
 
 
 class ContainerType(str, Enum):
-    AWS_S3         = "AWS S3"
-    GCS            = "Google Cloud Storage"
-    AZURE_BLOB     = "Azure Blob Storage"
-    CLOUDFRONT     = "CloudFront (CDN)"
-    OPEN_DIRECTORY = "Open Directory Listing"
-    GENERIC        = "Generic Web File Listing"
-    UNKNOWN        = "Unknown"
+    AWS_S3               = "AWS S3"
+    GCS                  = "Google Cloud Storage"
+    AZURE_BLOB           = "Azure Blob Storage"
+    CLOUDFRONT           = "CloudFront (CDN)"
+    OPEN_DIRECTORY       = "Open Directory Listing"
+    GENERIC              = "Generic Web File Listing"
+    GITLAB_PACKAGE_REGISTRY = "GitLab Generic Package Registry"
+    BITBUCKET_DOWNLOADS  = "Bitbucket Downloads"
+    DOCKER_REGISTRY      = "Docker Container Registry"
+    UNKNOWN              = "Unknown"
 
 
 class FileType(str, Enum):
@@ -179,6 +182,7 @@ class ScanStats:
     risk_score:        float = 0.0   # 0–10 computed risk score
     start_time:        float = field(default_factory=time.time)
     exposed_files:     List[ExposedFile] = field(default_factory=list)
+    suppressed_count:  int = 0       # Findings suppressed via --baseline (accepted risk)
 
     def to_dict(self) -> Dict[str, Any]:
         elapsed = round(time.time() - self.start_time, 2)
@@ -193,4 +197,5 @@ class ScanStats:
             "ai_summary":    self.ai_summary,
             "risk_score":    self.risk_score,
             "elapsed_sec":   elapsed,
+            "suppressed_count": self.suppressed_count,
         }

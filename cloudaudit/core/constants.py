@@ -1,6 +1,6 @@
 """cloudaudit — Framework Constants"""
 
-__version__     = "1.0.2"
+__version__     = "1.1.0"
 __tool_name__   = "CloudAudit"
 __author__      = "xtawb"
 __author_url__  = "https://linktr.ee/xtawb"
@@ -117,3 +117,14 @@ ENTROPY_THRESHOLDS = {
 CONFIG_DIR       = "~/.cloudaudit"
 CONFIG_FILE      = "~/.cloudaudit/config.enc"
 CONFIG_SALT_FILE = "~/.cloudaudit/.salt"
+HISTORY_DB_FILE  = "~/.cloudaudit/history.db"
+
+# ── New in v1.1.0 ────────────────────────────────────────────────────────────
+DEFAULT_BATCH_CONCURRENCY   = 1        # concurrent targets when using --targets-file
+CHECKPOINT_SAVE_INTERVAL    = 25       # save a crawl checkpoint every N analysed files
+DEFAULT_WEBHOOK_TIMEOUT     = 10.0
+DEFAULT_DOCKER_REGISTRY     = "registry-1.docker.io"
+DOCKER_AUTH_URL             = "https://auth.docker.io/token"
+MAX_DOCKER_LAYER_SIZE       = 250 * 1024 * 1024
+
+SEVERITY_ORDER = ["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL"]

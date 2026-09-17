@@ -5,6 +5,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.1.0] — 2026
+
+### Added
+
+* **SARIF 2.1.0 output** — `--format sarif` produces a valid SARIF log
+  (rules, results, partial fingerprints) for ingestion by GitHub Advanced
+  Security code scanning or any other SARIF consumer.
+* **CSV export** — `--format csv` writes a flat findings table.
+* **Baseline / allowlist suppression** — `--baseline FILE` (JSON or YAML) of
+  previously-accepted finding fingerprints; matching findings are suppressed
+  and counted separately as "previously accepted risk" (`suppressed_count`).
+* **Diff mode** — new `cloudaudit diff <old_report.json> <new_report.json>`
+  subcommand prints new / resolved / unchanged findings between two JSON
+  reports (exits non-zero if new findings appeared, for CI use).
+* **Local scan history** — every scan is recorded to a SQLite database at
+  `~/.cloudaudit/history.db` (timestamp, target, risk score, finding counts).
+  New `cloudaudit history [--limit N]` subcommand lists past scans.
+  Opt out per-scan with `--no-history`.
+* **Multi-target batch scanning** — `--targets-file urls.txt` scans multiple
+  targets (bounded by `--batch-concurrency`, default sequential), writing a
+  separate report set per target plus a combined `<output>_batch_summary.json`.
+* **Configurable concurrency** — `--concurrency` (alias for `--threads`) now
+  also bounds the crawler's recursive HTML directory listing phase, which
+  previously issued unbounded concurrent requests regardless of this setting.
+  `--rate-limit` continues to control the per-request delay used for throttling.
+* **Resume/checkpoint support** — `--checkpoint FILE` periodically persists
+  crawl/analysis progress; `--resume FILE` continues an interrupted scan
+  instead of restarting the crawl from scratch.
+* **Custom secret pattern plugins** — `--custom-patterns FILE` merges
+  user-supplied YAML regex patterns (name, regex, severity, description,
+  compliance tags) into the secret scanner's pattern set.
+* **GitLab / Bitbucket generic package registry detection** — the container
+  detector now recognises GitLab generic package registry URLs (enumerated
+  read-only via the GitLab packages JSON API) and Bitbucket repository
+  Downloads sections as additional container types.
+* **Docker image layer scanning** — `--scan-docker-image <registry>/<image>:<tag>`
+  performs a read-only pull of the image manifest and layers via the Docker
+  Registry HTTP API v2 (GET only), extracts layer contents with the existing
+  archive-extraction safeguards, and runs the secret scanner over them.
+* **AWS bucket ACL/policy inspection** — `--aws-acl-check` (optional `boto3`
+  dependency) enriches AWS S3 findings with real `get_bucket_acl` /
+  `get_bucket_policy` / `get_bucket_policy_status` detail when AWS credentials
+  are available; skips gracefully otherwise.
+* **Webhook notifications** — `--webhook-url URL` posts a redacted, Slack/Discord-
+  compatible JSON scan summary (target, risk score, severity counts, top
+  findings) at the end of a scan. Never sends raw secret values.
+* **Dry-run mode** — `--dry-run` enumerates discovered files (size, type)
+  without downloading or analysing their content.
+* **CI exit-code gating** — `--fail-on-severity {low,medium,high,critical}`
+  makes the process exit non-zero if any finding at or above that severity
+  is present.
+
+### Fixed
+
+* Heuristic AI executive summary always reported "Unknown"/zero findings
+  because it read scan data from a `"scan"` wrapper key that
+  `ScanStats.to_dict()` never produces — the summary is now populated correctly.
+* `cloudaudit config --set-api gemini` always reported the key as valid: the
+  live-validation path treated Gemini's structured `{"valid": ..., "error": ...}`
+  result as a boolean instead of unpacking it.
+* Fixed a resource leak: HTTP responses were never released back to the
+  connection pool when the crawler or analyser short-circuited on a non-200
+  status or an oversized `Content-Length` — under a large crawl this could
+  exhaust the connection pool.
+* Replaced deprecated `asyncio.get_event_loop()` calls in the engine with
+  `asyncio.get_running_loop()`.
+* The `EMAIL_ADDRESS` (and other PII) secret patterns were silently and
+  permanently suppressed by the entropy gate under the default
+  `--min-entropy`, because structured PII is naturally low-entropy; the gate
+  now only applies to non-PII secret patterns.
+* The recursive HTML directory crawler ignored `--threads`/`--concurrency`
+  entirely, issuing unbounded concurrent requests for every discovered
+  subdirectory; it is now bounded by a semaphore sized from that setting.
+* Fixed a truncation-ellipsis bug in the terminal findings detail view that
+  appended `...` to every recommendation even when it wasn't truncated.
+* Fixed a real resource/file-lock leak in the new local scan-history store:
+  `sqlite3.Connection`'s context manager only manages the transaction, not
+  the connection — connections are now explicitly closed.
+* Interactive AI provider setup could crash the whole process with an
+  uncaught `EOFError` when stdin reported `isatty()==True` but had no real
+  input available; it now falls back to heuristic analysis.
+
+---
+
 ## [1.0.2] — 2026
 
 ### Changed

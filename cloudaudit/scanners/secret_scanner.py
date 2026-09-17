@@ -18,12 +18,16 @@ The full secret value is never logged or stored.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
+from cloudaudit.core.exceptions import ConfigError
 from cloudaudit.core.models import FileType, Finding, FindingCategory, Severity
 from cloudaudit.utils.helpers import calculate_entropy, redact, truncate, url_filename
+
+logger = logging.getLogger("cloudaudit.secret_scanner")
 
 
 # ── Pattern definition ─────────────────────────────────────────────────────────
@@ -249,6 +253,74 @@ _PATTERNS: List[Pattern] = [
 ]
 
 
+_SEVERITY_MAP = {s.value.lower(): s for s in Severity}
+_CATEGORY_MAP = {c.value.lower(): c for c in FindingCategory}
+
+
+def load_custom_patterns(path: str) -> List[Pattern]:
+    """
+    Load user-supplied secret patterns from a YAML file (--custom-patterns).
+
+    Expected shape:
+
+        patterns:
+          - name: INTERNAL_SERVICE_TOKEN
+            regex: "internal_tok_[a-zA-Z0-9]{32}"
+            severity: high                # critical|high|medium|low|informational
+            description: "Internal service token"
+            category: secret exposure     # optional, defaults to Secret Exposure
+            compliance: ["NIST IA-5"]      # optional
+            recommendation: "Rotate the token."   # optional
+    """
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ConfigError("pyyaml is required to load --custom-patterns files.") from exc
+
+    from pathlib import Path
+    p = Path(path)
+    if not p.exists():
+        raise ConfigError(f"Custom patterns file not found: {path}")
+
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        raise ConfigError(f"Failed to parse custom patterns file {path}: {exc}") from exc
+
+    raw_patterns = data.get("patterns", data if isinstance(data, list) else [])
+    patterns: List[Pattern] = []
+
+    for item in raw_patterns:
+        name  = item.get("name")
+        regex = item.get("regex") or item.get("pattern")
+        if not name or not regex:
+            logger.warning("Skipping custom pattern with missing name/regex: %s", item)
+            continue
+        try:
+            re.compile(regex)
+        except re.error as exc:
+            logger.warning("Skipping custom pattern %r — invalid regex: %s", name, exc)
+            continue
+
+        severity = _SEVERITY_MAP.get(str(item.get("severity", "medium")).lower(), Severity.MEDIUM)
+        category = _CATEGORY_MAP.get(
+            str(item.get("category", "secret exposure")).lower(), FindingCategory.SECRET_EXPOSURE
+        )
+
+        patterns.append(Pattern(
+            name=str(name),
+            pattern=regex,
+            description=item.get("description", f"Custom pattern: {name}"),
+            severity=severity,
+            category=category,
+            recommendation=item.get("recommendation", "Review and remediate this custom-pattern finding."),
+            compliance=list(item.get("compliance", [])),
+        ))
+
+    logger.info("Loaded %d custom secret pattern(s) from %s", len(patterns), path)
+    return patterns
+
+
 class SecretScanner:
     """
     Scan text content for secrets, credentials, and sensitive data.
@@ -257,11 +329,12 @@ class SecretScanner:
     is never stored in the Finding object.
     """
 
-    def __init__(self, min_entropy: float = 3.5) -> None:
+    def __init__(self, min_entropy: float = 3.5, custom_patterns: Optional[List[Pattern]] = None) -> None:
         self._min_entropy = min_entropy
+        all_patterns = list(_PATTERNS) + list(custom_patterns or [])
         self._compiled = [
             (p, re.compile(p.pattern, re.MULTILINE))
-            for p in _PATTERNS
+            for p in all_patterns
         ]
 
     def scan(self, content: str, file_url: str, file_type: FileType) -> List[Finding]:
@@ -288,10 +361,17 @@ class SecretScanner:
                     if not any(k in window for k in pattern.context_required):
                         continue
 
-                # Entropy gate: very low-entropy strings are likely false positives
+                # Entropy gate: very low-entropy strings are likely false positives.
+                # This only makes sense for *random-looking secret* patterns — structured
+                # PII (emails, etc.) is naturally low-entropy and must not be gated here,
+                # otherwise those rules never fire under the default threshold.
                 ent = calculate_entropy(matched)
                 effective_severity = pattern.severity
-                if ent < self._min_entropy and pattern.severity in (Severity.MEDIUM, Severity.LOW):
+                if (
+                    ent < self._min_entropy
+                    and pattern.severity in (Severity.MEDIUM, Severity.LOW)
+                    and pattern.category != FindingCategory.PII_EXPOSURE
+                ):
                     continue   # skip — likely a placeholder or example
                 if ent > 5.2 and effective_severity == Severity.MEDIUM:
                     effective_severity = Severity.HIGH   # high-entropy medium → escalate

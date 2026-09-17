@@ -1,13 +1,14 @@
 """cloudaudit — Report Generator v2 with full branding and compliance sections."""
 
 from __future__ import annotations
-import json, time
+import csv, io, json, time
 from datetime import datetime, timezone
 from html import escape
 from typing import Any, Dict, List
 
 from cloudaudit.core.models import ScanStats
-from cloudaudit.core.constants import __version__, __tool_name__, __author__, __author_url__, __tagline__
+from cloudaudit.core.constants import __version__, __tool_name__, __author__, __author_url__, __tagline__, __github_repo__
+from cloudaudit.utils.helpers import finding_fingerprint as _finding_fp
 
 _SEV_COLORS = {
     "Critical": "#c0392b", "High": "#e67e22",
@@ -256,6 +257,140 @@ footer strong{{color:#718096}}
   <p>Defensive read-only audit. No write operations were performed.</p>
 </footer>
 </div></body></html>"""
+
+    # ── SARIF 2.1.0 (GitHub Advanced Security code scanning ingestion) ────────
+
+    _SARIF_SEV_MAP = {
+        "Critical": "error", "High": "error",
+        "Medium": "warning", "Low": "note", "Informational": "note",
+    }
+    _SARIF_SCORE = {
+        "Critical": 9.5, "High": 7.5, "Medium": 5.0, "Low": 2.5, "Informational": 0.5,
+    }
+
+    @classmethod
+    def sarif(cls, stats: ScanStats, org: str = "") -> str:
+        """
+        Produce a valid SARIF 2.1.0 log suitable for `github/codeql-action/upload-sarif`
+        or any other SARIF-consuming code scanning ingestion pipeline.
+        """
+        c = stats.container_info
+        target = c.raw_url if c else ""
+
+        rules_seen: Dict[str, Dict[str, Any]] = {}
+        results: List[Dict[str, Any]] = []
+
+        for f in stats.findings:
+            rule_id = f.rule_name
+            if rule_id not in rules_seen:
+                rules_seen[rule_id] = {
+                    "id": rule_id,
+                    "name": rule_id,
+                    "shortDescription": {"text": f.description or rule_id},
+                    "fullDescription": {"text": f.description or rule_id},
+                    "help": {"text": f.recommendation or ""},
+                    "properties": {
+                        "category": f.category.value,
+                        "security-severity": str(cls._SARIF_SCORE.get(f.severity.value, 5.0)),
+                        "tags": ["security", f.category.value] + list(f.compliance_refs),
+                    },
+                }
+
+            results.append({
+                "ruleId": rule_id,
+                "level": cls._SARIF_SEV_MAP.get(f.severity.value, "warning"),
+                "message": {"text": f"{f.description} (confidence {f.confidence:.0%})"},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": f.file_url or f.file_name},
+                        "region": {"startLine": f.line_number or 1},
+                    }
+                }],
+                "partialFingerprints": {
+                    "cloudauditFingerprint/v1": _finding_fp(f.rule_name, f.file_url, f.file_name),
+                },
+                "properties": {
+                    "severity": f.severity.value,
+                    "compliance_refs": f.compliance_refs,
+                    "from_archive": f.from_archive,
+                },
+            })
+
+        sarif_log = {
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": __tool_name__,
+                        "informationUri": __github_repo__,
+                        "version": __version__,
+                        "organization": __author__,
+                        "rules": list(rules_seen.values()),
+                    }
+                },
+                "originalUriBaseIds": {
+                    "TARGET_ROOT": {"uri": target or "https://example.invalid/"}
+                },
+                "properties": {
+                    "organisation": org,
+                    "risk_score": stats.risk_score,
+                    "generated_at": _now(),
+                },
+                "results": results,
+            }],
+        }
+        return json.dumps(sarif_log, indent=2, default=str)
+
+    # ── CSV (flat findings table) ──────────────────────────────────────────────
+
+    _CSV_FIELDS = [
+        "severity", "rule_name", "category", "file_name", "file_url",
+        "description", "line_number", "confidence", "compliance_refs",
+        "from_archive", "archive_path", "scanner", "recommendation",
+    ]
+
+    @classmethod
+    def csv(cls, stats: ScanStats, org: str = "") -> str:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=cls._CSV_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        for f in stats.findings:
+            row = f.to_dict()
+            row["compliance_refs"] = "; ".join(row.get("compliance_refs") or [])
+            writer.writerow(row)
+        return buf.getvalue()
+
+    # ── Convenience: write every requested format to disk ─────────────────────
+
+    _EXT_FOR_FORMAT = {
+        "json": ".json", "html": ".html", "markdown": ".md", "md": ".md",
+        "sarif": ".sarif", "csv": ".csv",
+    }
+
+    @classmethod
+    def write_all(cls, stats: ScanStats, base_path, fmt: str, org: str = "") -> List[Any]:
+        """
+        Write the requested report format(s) to disk next to ``base_path``
+        (extension is replaced/added per format). ``fmt`` is one of
+        json/html/markdown/sarif/csv/all. Returns the list of paths written.
+        """
+        from pathlib import Path
+        base = Path(base_path)
+        written: List[Path] = []
+        generators = {
+            "json": cls.json, "html": cls.html, "markdown": cls.markdown,
+            "md": cls.markdown, "sarif": cls.sarif, "csv": cls.csv,
+        }
+        formats = ["json", "html", "markdown", "sarif", "csv"] if fmt == "all" else [fmt]
+        for f in formats:
+            gen = generators.get(f)
+            if not gen:
+                continue
+            p = base.with_suffix(cls._EXT_FOR_FORMAT.get(f, f".{f}"))
+            p.write_text(gen(stats, org=org), encoding="utf-8")
+            written.append(p)
+        return written
 
     @staticmethod
     def _sev_counts(stats: ScanStats) -> Dict[str, int]:

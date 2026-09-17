@@ -223,7 +223,12 @@ def validate_key_live(provider: str, api_key: str) -> tuple[bool, str]:
             GeminiProvider, OpenAICompatibleProvider, ClaudeProvider
         )
         if provider == "gemini":
-            return GeminiProvider(api_key).validate_key(), ""
+            # GeminiProvider.validate_key() returns a structured dict
+            # ({"valid": bool, "model": ..., "error": ...}), not a bool —
+            # unpack it properly instead of treating the (always-truthy) dict
+            # itself as the validity flag.
+            result = GeminiProvider(api_key).validate_key()
+            return bool(result.get("valid")), result.get("error") or ""
         if provider in ("openai", "deepseek"):
             return OpenAICompatibleProvider(api_key, provider).validate_key(), ""
         if provider in ("claude", "anthropic"):

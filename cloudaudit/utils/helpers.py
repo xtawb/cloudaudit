@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from pathlib import Path
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 
@@ -57,3 +59,24 @@ def human_size(n_bytes: int) -> str:
 def safe_filename(name: str) -> str:
     """Sanitise a string for use as a filesystem filename."""
     return "".join(c if c.isalnum() or c in "-_." else "_" for c in name)
+
+
+def finding_fingerprint(rule_name: str, file_url: str, file_name: str = "") -> str:
+    """
+    Stable fingerprint for a finding, used by baseline suppression and diff mode.
+
+    Deliberately based on (rule type + location) rather than the redacted match
+    text, so the same misconfiguration/secret at the same location is recognised
+    as "the same finding" across scans even if the underlying value rotates.
+    """
+    basis = f"{rule_name}|{file_url}|{file_name}"
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+
+
+def finding_dict_fingerprint(finding: Mapping[str, Any]) -> str:
+    """Same as finding_fingerprint(), but accepts a Finding.to_dict()-shaped mapping."""
+    return finding_fingerprint(
+        rule_name=str(finding.get("rule_name", "")),
+        file_url=str(finding.get("file_url", "")),
+        file_name=str(finding.get("file_name", "")),
+    )

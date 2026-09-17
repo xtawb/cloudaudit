@@ -269,6 +269,7 @@ def print_findings_detail(display: PhaseDisplay, stats) -> None:
         print(f"    Category      : {f.category.value}")
         print(f"    Confidence    : {f.confidence:.0%}  |  Line: {f.line_number or 'N/A'}")
         print(f"    Compliance    : {', '.join(f.compliance_refs) or 'N/A'}")
-        print(f"    Recommendation: {f.recommendation[:110]}...")
+        rec = f.recommendation or ""
+        print(f"    Recommendation: {rec[:110]}{'...' if len(rec) > 110 else ''}")
         if f.from_archive:
             print(f"    Archive Path  : {f.archive_path}")

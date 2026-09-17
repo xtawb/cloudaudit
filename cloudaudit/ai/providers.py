@@ -596,7 +596,10 @@ class HeuristicProvider(AIProvider):
         except Exception:
             data = {}
 
-        scan     = data.get("scan", {})
+        # ``audit_json`` is produced by ScanStats.to_dict() directly (top-level
+        # keys: container/findings/risk_score/...). Some callers may also pass
+        # the wrapped report shape ({"meta": ..., "scan": {...}}) — support both.
+        scan     = data.get("scan", data)
         findings = scan.get("findings", [])
         container= scan.get("container", {})
         risk     = scan.get("risk_score", 0)

@@ -4,3 +4,11 @@ env/
 ENV/
 .env/
 .env.local
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# CloudAudit local state
+.cloudaudit/
+*.checkpoint.json

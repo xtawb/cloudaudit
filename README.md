@@ -15,7 +15,7 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
        
 ```
 
-[![Version](https://img.shields.io/badge/version-1.0.2-blue?style=flat-square&logo=git)](#)
+[![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square&logo=git)](#)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-Proprietary-red?style=flat-square)](#)
 [![Docs](https://img.shields.io/readthedocs/cloudaudit?style=flat-square&logo=readthedocs)](#)
@@ -508,7 +508,13 @@ pip install anthropic          # Anthropic Claude
 pip install Pillow             # Image EXIF metadata analysis
 pip install cryptography       # Encrypted local API key storage
 pip install py7zr              # 7-Zip archive extraction
+pip install boto3              # --aws-acl-check (real S3 ACL/policy inspection)
 ```
+
+`--custom-patterns` and `--baseline` (when given a `.yml`/`.yaml` file) use
+`pyyaml`, already a core dependency. Local scan history (`cloudaudit history`)
+and resume/checkpoint support use only the Python standard library
+(`sqlite3`, `json`) — no extra install required.
 
 ---
 
@@ -608,6 +614,86 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
            -o reports/audit
 ```
 
+### Dry Run (Enumerate Only, No Content Download)
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --dry-run -o reports/inventory
+```
+
+### CI/CD Gating (SARIF for GitHub Advanced Security)
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --format sarif -o reports/audit \
+           --fail-on-severity high
+# Non-zero exit if any High/Critical finding is present — upload reports/audit.sarif
+# with github/codeql-action/upload-sarif in your workflow.
+```
+
+### Baseline Suppression (Accepted-Risk Allowlist)
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --baseline accepted_risk.json -o reports/audit
+```
+
+### Custom Secret Patterns
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --custom-patterns patterns.yml -o reports/audit
+```
+
+### Resume an Interrupted Scan
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --checkpoint audit.checkpoint.json -o reports/audit
+# ... interrupted (Ctrl+C, network blip) ...
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --resume audit.checkpoint.json -o reports/audit
+```
+
+### Batch Scan Multiple Targets
+
+```bash
+cloudaudit --targets-file urls.txt \
+           --confirm-ownership --org-name "Acme Corp" \
+           --batch-concurrency 3 -o reports/batch
+```
+
+### Docker Image Layer Scan
+
+```bash
+cloudaudit --scan-docker-image registry.example.com/team/app:1.2.3 \
+           --confirm-ownership --org-name "Acme Corp" \
+           -o reports/image_audit
+```
+
+### AWS ACL/Policy Enrichment + Webhook Notification
+
+```bash
+cloudaudit -u https://mybucket.s3.amazonaws.com/ \
+           --confirm-ownership --org-name "Acme Corp" \
+           --aws-acl-check \
+           --webhook-url https://hooks.slack.com/services/... \
+           -o reports/audit
+```
+
+### Diff Two Reports / Local Scan History
+
+```bash
+cloudaudit diff reports/audit_jan.json reports/audit_feb.json
+cloudaudit history --limit 10
+```
+
 ---
 
 ## CLI Reference
@@ -631,6 +717,20 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
 | `--min-severity` | `LOW` | Minimum finding severity |
 | `--extract-archives` | off | Extract and scan archives |
 | `--deep-metadata` | off | Extract EXIF from images |
+| `-t`, `--threads`, `--concurrency N` | 8 | Concurrent HTTP requests — bounds both the crawl and analysis phases |
+| `--rate-limit SECONDS` | 0.15 | Delay per request per connection (combined with concurrency, bounds effective req/sec) |
+| `--dry-run` | off | Enumerate discovered files (size/type) without downloading or analysing content |
+| `--baseline FILE` | | JSON/YAML file of accepted-risk finding fingerprints to suppress |
+| `--custom-patterns FILE` | | YAML file of additional secret regex patterns to merge into the scanner |
+| `--checkpoint FILE` | | Periodically save crawl/analysis progress to this file |
+| `--resume FILE` | | Resume a previously interrupted scan from a `--checkpoint` file |
+| `--aws-acl-check` | off | Enrich AWS S3 findings with real ACL/policy detail via `boto3` (optional dependency) |
+| `--targets-file FILE` | | Batch-scan multiple targets, one URL per line |
+| `--batch-concurrency N` | 1 | Targets scanned concurrently with `--targets-file` |
+| `--scan-docker-image REF` | | Read-only scan of a container image's layers for secrets (no `-u` required) |
+| `--webhook-url URL` | | POST a redacted scan summary to a Slack/Discord-compatible webhook |
+| `--fail-on-severity LEVEL` | | Exit non-zero if any finding at/above `low`/`medium`/`high`/`critical` is present |
+| `--no-history` | off | Don't record this scan in `~/.cloudaudit/history.db` |
 
 ### AI Provider
 
@@ -647,11 +747,19 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-o`, `--output BASE` | | Output base filename |
-| `--format FORMAT` | `all` | `json` / `html` / `markdown` / `all` |
+| `--format FORMAT` | `all` | `json` / `html` / `markdown` / `sarif` / `csv` / `all` |
 | `-v`, `--verbose` | off | Verbose output including AI summary |
 | `-d`, `--debug` | off | Full debug with stack traces |
 | `-q`, `--quiet` | off | Suppress all terminal output |
 | `--no-update-check` | off | Skip GitHub update check |
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `cloudaudit config --set-api / --list-providers / --remove-api` | Manage encrypted API keys |
+| `cloudaudit diff <old_report.json> <new_report.json>` | Print new / resolved / unchanged findings between two JSON reports |
+| `cloudaudit history [--limit N]` | List locally recorded past scans from `~/.cloudaudit/history.db` |
 
 ---
 
@@ -759,11 +867,12 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 ## Roadmap
 
-- AWS SDK bucket policy and ACL inspection
-- SARIF output format for GitHub Advanced Security
+- ~~AWS SDK bucket policy and ACL inspection~~ — shipped in v1.1.0 (`--aws-acl-check`)
+- ~~SARIF output format for GitHub Advanced Security~~ — shipped in v1.1.0 (`--format sarif`)
+- ~~Multi-bucket batch scanning mode~~ — shipped in v1.1.0 (`--targets-file`)
+- ~~Docker image layer scanning~~ — shipped in v1.1.0 (`--scan-docker-image`)
 - Jira/ServiceNow automatic ticket creation
-- Multi-bucket batch scanning mode
-- Docker image layer scanning
+- Kubernetes secret/ConfigMap scanning for cluster-adjacent exposure
 
 ---
 
@@ -786,5 +895,5 @@ By using `--confirm-ownership`, you declare that you are authorised to audit the
 
 ---
 
-*CloudAudit v1.0.2 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
+*CloudAudit v1.1.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
 *Powered by xtawb | Defensive. Intelligent. Enterprise-Grade.*
