@@ -15,7 +15,7 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
          
 ```
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue)](#)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue)](#)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](#)
 [![Mode](https://img.shields.io/badge/mode-read--only-green)](#)
 [![Docs](https://img.shields.io/readthedocs/cloudaudit)](#)

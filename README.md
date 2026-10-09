@@ -15,7 +15,7 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
        
 ```
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue?style=flat-square&logo=git)](#)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue?style=flat-square&logo=git)](#)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#)
 [![Docs](https://img.shields.io/readthedocs/cloudaudit?style=flat-square&logo=readthedocs)](#)
@@ -47,6 +47,19 @@ CloudAudit is designed for **defensive internal use only**. Every design decisio
 - **Ownership-gated**: The engine refuses to start without explicit `--confirm-ownership` and `--org-name` flags.
 - **Secrets never stored raw**: All pattern matches are redacted before being written to findings or transmitted to AI providers.
 - **No exploitation guidance**: AI providers are explicitly prompted to produce only defensive remediation recommendations.
+- **AI is optional**: the built-in **Local Intelligence Engine** performs semantic analysis, correlation and executive-summary generation entirely offline — no API key, no data leaving the machine.
+
+### What's new in v1.3.0
+
+| Area | Change |
+|------|--------|
+| **Works without an API key** | New offline Local Intelligence Engine: statistical secret classifier, semantic key/value analysis, 27 IaC/config misconfiguration rules, JWT inspection, compound-exposure correlation, file risk ranking and a data-driven executive summary with a prioritised remediation plan |
+| **API key handling** | Keys are normalised (quotes, whitespace, `Bearer`, `NAME=value`), the provider is auto-detected from the key, modern key formats are accepted, and `cloudaudit config --test-api` tells a *rejected* key apart from *no quota* and *could not check* |
+| **AI reliability** | Every provider error is classified; rate limits are retried with back-off, retired/zero-quota models fall through to the next model, and a circuit breaker stops a bad key from failing once per file. An audit never loses its summary to a provider problem |
+| **Detection** | 31 new credential formats (51 rules total), Luhn-validated card numbers, validated JWTs, placeholder/example filtering, and context-aware confidence |
+| **Noise** | Bulk values are aggregated per file, lockfiles/minified bundles no longer produce entropy findings, and the false "duplicate secret" CRITICALs caused by hashing redacted prefixes are gone |
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ---
 
@@ -469,16 +482,21 @@ URL Input
 [Phase 8]  Cloud Misconfiguration Aggregation
     |
     v
-[Phase 9]  Risk Scoring v2
-           Weighted severity x category multipliers x exposure surface
+[Phase 9]  Local Intelligence (offline, always on)
+           Confidence calibration -> noise aggregation -> compound-exposure correlation
     |
     v
-[Phase 10] AI Executive Summary
-           Automatic provider chain: primary -> heuristic fallback
-           Gemini: dynamic model discovery, zero 404 errors
+[Phase 10] Risk Scoring v3
+           Confidence-weighted severity x category, diminishing returns per rule,
+           credential / compound-exposure floors, file risk ranking
     |
     v
-[Phase 11] Report Output
+[Phase 11] Executive Summary
+           Provider chain: configured provider -> Local Intelligence Engine
+           Classified errors, retry/back-off, model fallback, circuit breaker
+    |
+    v
+[Phase 12] Report Output
            JSON (SIEM-ready) + HTML (stakeholder) + Markdown (Confluence/Jira)
 ```
 
@@ -807,8 +825,10 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--provider NAME` | | `gemini`, `openai`, `claude`, `deepseek`, `ollama`, `custom` |
-| `--api-key KEY` | | API key |
+| `--provider NAME` | | `gemini`, `openai`, `claude` (`anthropic`), `deepseek`, `ollama`, `custom`. Optional — without it the offline Local Intelligence Engine is used |
+| `--api-key KEY` | | API key. If `--provider` is omitted the provider is detected from the key. Otherwise resolved from the provider env var, `.cloudaudit.env`, then the encrypted key store |
+| `--model NAME` | auto | Override automatic model selection |
+| `--no-ai` | off | Never contact an AI provider (offline engine only) |
 | `--provider-url URL` | | Base URL for custom endpoints |
 | `--ollama-url URL` | `http://localhost:11434` | Ollama server |
 | `--ollama-model MODEL` | `llama3` | Ollama model name |
@@ -828,7 +848,7 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
 
 | Subcommand | Description |
 |------------|-------------|
-| `cloudaudit config --set-api / --list-providers / --remove-api` | Manage encrypted API keys |
+| `cloudaudit config --set-api / --test-api / --list-providers / --remove-api` | Manage and test encrypted API keys |
 | `cloudaudit config --save-profile NAME / --list-profiles` | Save current flags as a named profile, or list saved profiles |
 | `cloudaudit diff <old_report.json> <new_report.json>` | Print new / resolved / unchanged findings between two JSON reports |
 | `cloudaudit history [--limit N]` | List locally recorded past scans from `~/.cloudaudit/history.db` |
@@ -974,5 +994,5 @@ By using `--confirm-ownership`, you declare that you are authorised to audit the
 
 ---
 
-*CloudAudit v1.2.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
+*CloudAudit v1.3.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
 *Powered by xtawb | Defensive. Intelligent. Enterprise-Grade.*

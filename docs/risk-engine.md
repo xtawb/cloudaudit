@@ -113,3 +113,28 @@ this in the AI or heuristic executive summary (for example: *"3 new critical
 findings since last scan on 2026-08-01, 2 resolved, risk score up 1.4
 points"*). Use `cloudaudit history` to inspect past scores, or
 `cloudaudit diff <old.json> <new.json>` for a full finding-level comparison.
+
+## Risk Scoring v3 (v1.3.0)
+
+Source: `intelligence/risk_scorer.py`
+
+```text
+weight(f)  = severity_weight × category_multiplier × (0.4 + 0.6 × confidence)
+raw        = Σ over rules  Σ over that rule's findings, sorted desc:  weight × 0.6^i
+score      = 10 × (1 − e^(−raw / 9))
+```
+
+- **Confidence-weighted** — a 30%-confidence guess no longer weighs the same
+  as a validated provider token.
+- **Diminishing returns per rule** — the 400th email address in a CSV adds
+  almost nothing; the first AWS key adds a lot.
+- **Floors** — a confident critical credential ≥ 7.5; a validated cloud /
+  provider credential ≥ 8.5; a critical compound exposure ≥ 9.0.
+- **Ceiling** — a scan with nothing above Low severity cannot exceed 3.5.
+
+### File risk ranking
+
+`scan.file_risk` in the JSON report lists the ten highest-risk files with a
+0–10 per-file score, finding counts and the rules driving the score. The
+executive summary's "Highest-Risk Files" section is built from it.
+

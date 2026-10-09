@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from cloudaudit.core.models import FileType, Finding, FindingCategory, Severity
-from cloudaudit.utils.helpers import calculate_entropy, redact, url_filename
+from cloudaudit.intelligence.local_ai import is_credential_finding
+from cloudaudit.utils.helpers import calculate_entropy, redact, secret_hash, url_filename
 
 
 # ── High-entropy string hunter ─────────────────────────────────────────────────
@@ -30,6 +31,8 @@ class EntropyHit:
     entropy:    float
     line_number:int
     context:    str         # Surrounding line(s), sanitised
+    score:      float = 0.5 # Secret-likelihood from the local classifier (0..1)
+    value_hash: str = ""    # Salted hash of the raw token (in-memory only)
 
 
 class EntropyHunter:
@@ -57,11 +60,26 @@ class EntropyHunter:
     # Token separators
     _SPLIT_RE = re.compile(r'[\s=:"\',;<>()\[\]{}]+')
 
-    def scan(self, content: str, threshold: float = 4.5) -> List[EntropyHit]:
+    # Lines longer than this are minified bundles / embedded blobs, not config.
+    MAX_LINE_LEN = 2000
+    MAX_HITS_PER_FILE = 200
+
+    _KEY_HINT_RE = re.compile(r"""["']?([A-Za-z_][\w.\-]{1,60})["']?\s*(?:=>|:=|=|:)\s*["']?$""")
+
+    def scan(self, content: str, threshold: float = 4.5, classifier=None) -> List[EntropyHit]:
+        """
+        Find high-entropy tokens. When a ``classifier`` (local_ai.TokenClassifier)
+        is supplied, each candidate is also judged statistically — language
+        model, character-class transitions, benign formats, key-name semantics —
+        and only tokens it considers credible secrets are returned.
+        """
         hits: List[EntropyHit] = []
+        seen: Set[str] = set()
         lines = content.split("\n")
 
         for line_num, line in enumerate(lines, 1):
+            if len(line) > self.MAX_LINE_LEN:
+                continue
             tokens = self._SPLIT_RE.split(line)
             for token in tokens:
                 token = token.strip()
@@ -71,16 +89,33 @@ class EntropyHunter:
                     continue
 
                 ent = calculate_entropy(token)
-                if ent >= threshold:
-                    # Additional validation: require mixed character classes
-                    if self._has_mixed_chars(token):
-                        ctx = lines[max(0, line_num-2):line_num+1]
-                        hits.append(EntropyHit(
-                            value=redact(token),
-                            entropy=round(ent, 3),
-                            line_number=line_num,
-                            context="\n".join(ctx)[:200],
-                        ))
+                if ent < threshold or not self._has_mixed_chars(token):
+                    continue
+
+                score = 0.5
+                if classifier is not None:
+                    pos = line.find(token)
+                    hint = self._KEY_HINT_RE.search(line[:pos]) if pos > 0 else None
+                    verdict = classifier.classify(token, key_hint=hint.group(1) if hint else "")
+                    if verdict.label in ("benign", "placeholder"):
+                        continue
+                    score = verdict.score
+
+                vh = secret_hash(token)
+                if vh in seen:
+                    continue
+                seen.add(vh)
+                ctx = lines[max(0, line_num-2):line_num+1]
+                hits.append(EntropyHit(
+                    value=redact(token),
+                    entropy=round(ent, 3),
+                    line_number=line_num,
+                    context="\n".join(ctx)[:200].replace(token, redact(token)),
+                    score=score,
+                    value_hash=vh,
+                ))
+                if len(hits) >= self.MAX_HITS_PER_FILE:
+                    return hits
 
         return hits
 
@@ -122,18 +157,26 @@ class SecretDeduplicator:
         self._rule_files: Dict[str, Set[str]] = defaultdict(set)
 
     def register(self, finding: Finding) -> None:
-        # Use a hash of the match so we never store the actual value
-        h = hashlib.sha256(finding.match.encode()).hexdigest()[:16]
-        self._seen_hashes[h].append((finding.file_url, finding.rule_name))
+        # Only real credential values take part: emails, IP addresses and
+        # entropy hits are not "secrets" that can be reused or duplicated.
+        if not is_credential_finding(finding):
+            return
         self._rule_files[finding.rule_name].add(finding.file_url)
+        # Compare the salted hash of the *raw* value. Earlier versions hashed
+        # the redacted match (first 6 characters + "***"), so any two secrets
+        # sharing a prefix — every JWT ("eyJhbG"), every "AKIA…" key — were
+        # reported as CRITICAL duplicates of each other.
+        if not finding.value_hash:
+            return
+        self._seen_hashes[finding.value_hash].append((finding.file_url, finding.rule_name))
 
     def get_duplicate_findings(self) -> List[Finding]:
         """Return synthetic findings for secrets that appear in multiple files."""
         duplicates: List[Finding] = []
         for h, occurrences in self._seen_hashes.items():
-            if len(occurrences) < 2:
+            files = sorted({url for url, _ in occurrences})
+            if len(files) < 2:      # the same value repeated inside one file is not cross-file reuse
                 continue
-            files = list({url for url, _ in occurrences})
             rule  = occurrences[0][1]
             duplicates.append(Finding(
                 file_url=occurrences[0][0],
@@ -312,37 +355,69 @@ class MisconfigAnalyzer:
     ) -> List[MisconfigFinding]:
         """Detect sensitive files that should never be in cloud storage."""
         findings: List[MisconfigFinding] = []
+        # (regex, label, severity, stable rule slug). The slug is None for the
+        # original v1.x entries so their rule names — and therefore baseline
+        # fingerprints — stay exactly as they were.
         sensitive_patterns = [
-            (r"\.env$",           "Environment variable file",      Severity.CRITICAL),
-            (r"id_rsa$",          "RSA private key",                Severity.CRITICAL),
-            (r"\.pem$",           "PEM certificate/key",            Severity.CRITICAL),
-            (r"\.p12$|\.pfx$",    "PKCS12 certificate bundle",      Severity.CRITICAL),
-            (r"credentials$",     "Credentials file",               Severity.CRITICAL),
-            (r"\.htpasswd$",      "Apache password file",           Severity.HIGH),
-            (r"wp-config\.php",   "WordPress configuration",        Severity.HIGH),
-            (r"database\.yml",    "Database configuration",         Severity.HIGH),
-            (r"settings\.py$",    "Django settings file",           Severity.HIGH),
-            (r"\.npmrc$",         "NPM configuration (may have token)", Severity.MEDIUM),
-            (r"\.netrc$",         "Netrc credentials file",         Severity.CRITICAL),
-            (r"terraform\.tfstate","Terraform state (may contain secrets)", Severity.HIGH),
+            (r"\.env$",           "Environment variable file",      Severity.CRITICAL, None),
+            (r"id_rsa$",          "RSA private key",                Severity.CRITICAL, None),
+            (r"\.pem$",           "PEM certificate/key",            Severity.CRITICAL, None),
+            (r"\.p12$|\.pfx$",    "PKCS12 certificate bundle",      Severity.CRITICAL, None),
+            (r"credentials$",     "Credentials file",               Severity.CRITICAL, None),
+            (r"\.htpasswd$",      "Apache password file",           Severity.HIGH, None),
+            (r"wp-config\.php",   "WordPress configuration",        Severity.HIGH, None),
+            (r"database\.yml",    "Database configuration",         Severity.HIGH, None),
+            (r"settings\.py$",    "Django settings file",           Severity.HIGH, None),
+            (r"\.npmrc$",         "NPM configuration (may have token)", Severity.MEDIUM, None),
+            (r"\.netrc$",         "Netrc credentials file",         Severity.CRITICAL, None),
+            (r"terraform\.tfstate","Terraform state (may contain secrets)", Severity.HIGH, None),
+            # ── v1.3.0 ──────────────────────────────────────────────────────
+            (r"\.env\.[\w.\-]+$",                 "Environment variable file (variant)",   Severity.HIGH,     "env-variant"),
+            (r"(?:^|/)id_(?:ed25519|ecdsa|dsa)$",  "SSH private key",                       Severity.CRITICAL, "ssh-private-key"),
+            (r"\.ppk$",                            "PuTTY private key",                     Severity.CRITICAL, "putty-key"),
+            (r"\.(?:key|keystore|jks|kdbx|ovpn)$", "Key store / key material",              Severity.HIGH,     "keystore"),
+            (r"(?:^|/)\.git/(?:config|HEAD|index)$|(?:^|/)\.git-credentials$",
+                                                    "Git repository metadata / credentials", Severity.HIGH,     "git-metadata"),
+            (r"(?:^|/)\.kube/config$|kubeconfig", "Kubernetes cluster credentials",        Severity.CRITICAL, "kubeconfig"),
+            (r"(?:^|/)\.docker/config\.json$|\.dockercfg$", "Docker registry credentials", Severity.HIGH,     "docker-config"),
+            (r"\.(?:sql|dump|bak|sqlite3?|mdb)(?:\.(?:gz|zip|bz2|xz))?$|\.db$",
+                                                    "Database dump / backup",                Severity.HIGH,     "database-dump"),
+            (r"(?:^|/)\.pgpass$|(?:^|/)\.my\.cnf$",  "Database client password file",       Severity.CRITICAL, "db-client-password"),
+            (r"(?:^|/)\.(?:bash|zsh|sh|mysql|psql|python)_history$", "Shell / client history", Severity.HIGH,   "shell-history"),
+            (r"(?:^|/)(?:shadow|passwd)(?:\.bak|-)?$", "System account database",            Severity.HIGH,     "system-accounts"),
+            (r"\.tfvars(?:\.json)?$",              "Terraform variables (often secrets)",   Severity.HIGH,     "tfvars"),
+            (r"secrets?\.(?:ya?ml|json|toml|properties|txt)$", "Secrets file",             Severity.CRITICAL, "secrets-file"),
+            (r"(?:backup|dump|export|archive)[\w.\-]*\.(?:zip|tar|tgz|gz|7z|rar)$",
+                                                    "Backup archive",                        Severity.MEDIUM,   "backup-archive"),
+            (r"\.(?:har|pcap|pcapng)$",            "Network capture (may contain sessions)", Severity.HIGH,    "network-capture"),
+            (r"(?:^|/)(?:web\.config|appsettings[\w.\-]*\.json|application[\w.\-]*\.(?:properties|ya?ml))$",
+                                                    "Application configuration",             Severity.MEDIUM,   "app-config"),
+            (r"(?:^|/)(?:phpinfo|info)\.php$",     "PHP environment disclosure page",       Severity.MEDIUM,   "phpinfo"),
+            (r"(?:^|/)\.ssh/(?:authorized_keys|known_hosts|config)$", "SSH client/server trust data", Severity.MEDIUM, "ssh-trust"),
+            (r"(?:^|/)(?:\.travis\.yml|\.gitlab-ci\.yml|jenkinsfile|\.circleci/config\.yml)$|(?:^|/)\.github/workflows/",
+                                                    "CI/CD pipeline definition",             Severity.LOW,      "ci-pipeline"),
         ]
 
         matched_patterns: Set[str] = set()
         for key in file_keys:
             key_lower = key.lower()
-            for pattern, label, severity in sensitive_patterns:
-                if re.search(pattern, key_lower) and pattern not in matched_patterns:
-                    matched_patterns.add(pattern)
-                    findings.append(MisconfigFinding(
-                        name=f"SENSITIVE_FILE_EXPOSED:{pattern.strip(r'^$')}",
-                        description=f"{label} ({key}) is publicly accessible in cloud storage.",
-                        severity=severity,
-                        recommendation=(
-                            f"Remove {key} from cloud storage immediately. "
-                            "If credentials were stored here, rotate them. "
-                            "Add this path to .gitignore and cloud storage lifecycle rules."
-                        ),
-                        compliance_refs=["NIST IA-5", "CIS 2.1.5", "SOC2 CC6.7"],
-                    ))
+            for pattern, label, severity, slug in sensitive_patterns:
+                if pattern in matched_patterns or not re.search(pattern, key_lower):
+                    continue
+                # Count every file this pattern exposes, not only the first.
+                count = sum(1 for k in file_keys if re.search(pattern, k.lower()))
+                more = f" and {count - 1} more matching file(s)" if count > 1 else ""
+                matched_patterns.add(pattern)
+                findings.append(MisconfigFinding(
+                    name=f"SENSITIVE_FILE_EXPOSED:{slug or pattern.strip(r'^$')}",
+                    description=f"{label} ({key}{more}) is publicly accessible in cloud storage.",
+                    severity=severity,
+                    recommendation=(
+                        f"Remove {key} from cloud storage immediately. "
+                        "If credentials were stored here, rotate them. "
+                        "Add this path to .gitignore and cloud storage lifecycle rules."
+                    ),
+                    compliance_refs=["NIST IA-5", "CIS 2.1.5", "SOC2 CC6.7"],
+                ))
 
         return findings

@@ -124,6 +124,10 @@ class Finding:
     scanner:         str = "SecretScanner"
     from_archive:    bool = False          # Was this found inside an extracted archive?
     archive_path:    str = ""             # Path within archive
+    occurrences:     int = 1               # Times this exact value appears in the file
+    # Salted, truncated hash of the raw matched value. Used only in-memory for
+    # duplicate detection — deliberately NOT serialised by to_dict().
+    value_hash:      str = field(default="", repr=False, compare=False)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -143,6 +147,7 @@ class Finding:
             "scanner":         self.scanner,
             "from_archive":    self.from_archive,
             "archive_path":    self.archive_path,
+            "occurrences":     self.occurrences,
         }
 
 
@@ -184,6 +189,9 @@ class ScanStats:
     exposed_files:     List[ExposedFile] = field(default_factory=list)
     suppressed_count:  int = 0       # Findings suppressed via --baseline (accepted risk)
     trend_summary:     str = ""      # Exposure trend vs. previous scan of this target (v1.2.0)
+    ai_engine:         str = ""      # Which engine wrote the summary, e.g. "gemini/gemini-2.5-flash" (v1.3.0)
+    ai_status:         str = ""      # Human-readable AI provider status / fallback reason (v1.3.0)
+    file_risk:         List[Dict[str, Any]] = field(default_factory=list)  # Highest-risk files (v1.3.0)
 
     def to_dict(self) -> Dict[str, Any]:
         elapsed = round(time.time() - self.start_time, 2)
@@ -200,4 +208,7 @@ class ScanStats:
             "elapsed_sec":   elapsed,
             "suppressed_count": self.suppressed_count,
             "trend_summary": self.trend_summary,
+            "ai_engine":     self.ai_engine,
+            "ai_status":     self.ai_status,
+            "file_risk":     self.file_risk,
         }

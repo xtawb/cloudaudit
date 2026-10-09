@@ -74,6 +74,10 @@ Powered by {__author__} | {__author_url__}
     cfg.add_argument("--set-api",        metavar="PROVIDER", help="Set API key for a provider")
     cfg.add_argument("--list-providers", action="store_true", help="List all supported AI providers")
     cfg.add_argument("--remove-api",     metavar="PROVIDER", help="Remove stored API key for a provider")
+    cfg.add_argument("--test-api",       metavar="PROVIDER",
+                     help="Test the key that a scan would use for a provider (flag, env var, .cloudaudit.env or store)")
+    cfg.add_argument("--provider-url",   metavar="URL", help="Base URL when testing/setting a custom OpenAI-compatible endpoint")
+    cfg.add_argument("--model",          metavar="NAME", help="Model to use when testing a key")
     cfg.add_argument("--save-profile",   metavar="NAME",
                       help="Save the scan flags given on this command line as a reusable "
                            "profile at ~/.cloudaudit/profiles/<name>.yml (API keys are never saved)")
@@ -165,9 +169,16 @@ Powered by {__author__} | {__author_url__}
                    help="Shortcut for --webhook-format slack — force a Slack Block Kit executive "
                         "summary payload for --webhook-url")
 
-    p.add_argument("--provider", choices=["gemini","openai","claude","deepseek","ollama","custom"],
-                   help="AI provider for semantic analysis and executive summary")
-    p.add_argument("--api-key",       help="API key for the selected AI provider")
+    p.add_argument("--provider", type=str.lower,
+                   choices=["gemini","openai","claude","anthropic","deepseek","ollama","custom"],
+                   help="AI provider for semantic analysis and executive summary "
+                        "(optional — the built-in local intelligence engine needs no provider or key)")
+    p.add_argument("--api-key",       help="API key for the selected AI provider "
+                                           "(the provider is auto-detected from the key when --provider is omitted)")
+    p.add_argument("--model",         metavar="NAME",
+                   help="Override automatic AI model selection (e.g. gemini-2.5-flash, gpt-4o-mini)")
+    p.add_argument("--no-ai",         action="store_true",
+                   help="Never contact an AI provider — use only the offline local intelligence engine")
     p.add_argument("--provider-url",  help="Base URL for custom OpenAI-compatible endpoints")
     p.add_argument("--ollama-url",    default="http://localhost:11434",
                    help="Ollama server URL (default: http://localhost:11434)")
@@ -207,10 +218,28 @@ Powered by {__author__} | {__author_url__}
 
 def handle_config(args, display: PhaseDisplay) -> int:
     from cloudaudit.config_mgr.key_manager import (
-        SecureKeyStore, PROVIDER_INFO, validate_key_format, validate_key_live,
-        get_troubleshoot_guide,
+        SecureKeyStore, PROVIDER_INFO, validate_key_format, validate_key_detailed,
+        get_troubleshoot_guide, canonical_provider, normalize_api_key, mask_key, resolve_api_key,
     )
     store = SecureKeyStore()
+
+    if getattr(args, "test_api", None):
+        provider = canonical_provider(args.test_api)
+        info = PROVIDER_INFO.get(provider)
+        if not info:
+            display.error(f"Unknown provider: {args.test_api}")
+            return 1
+        api_key, source = resolve_api_key(provider)
+        if provider != "ollama" and not api_key:
+            display.error(f"No API key found for {provider}. Run: cloudaudit config --set-api {provider}")
+            return 1
+        if api_key:
+            print(f"  Testing {C.BOLD}{info['label']}{C.RESET} key {mask_key(api_key)} from {source} ...")
+        else:
+            print(f"  Testing {C.BOLD}{info['label']}{C.RESET} ...")
+        res = validate_key_detailed(provider, api_key or "", getattr(args, "provider_url", None),
+                                    getattr(args, "model", None))
+        return _report_key_check(provider, res, info)
 
     if args.list_providers:
         display.section_header("SUPPORTED AI PROVIDERS")
@@ -223,7 +252,7 @@ def handle_config(args, display: PhaseDisplay) -> int:
         return 0
 
     if args.set_api:
-        provider = args.set_api.lower()
+        provider = canonical_provider(args.set_api)
         info     = PROVIDER_INFO.get(provider)
         if not info:
             display.error(f"Unknown provider: {provider}")
@@ -239,30 +268,29 @@ def handle_config(args, display: PhaseDisplay) -> int:
             return 0
 
         import getpass
-        api_key = getpass.getpass("  Enter API key: ")
-        if not api_key.strip():
+        # normalize_api_key() strips the whitespace, quotes, "Bearer " prefix and
+        # "NAME=value" wrappers that otherwise get stored and later rejected.
+        api_key = normalize_api_key(getpass.getpass("  Enter API key: "))
+        if not api_key:
             display.warning("No key entered. Aborting.")
             return 1
 
         display.step("Validating key format...")
         fmt_ok, fmt_hint = validate_key_format(provider, api_key)
         if not fmt_ok:
-            display.warning(f"Format mismatch: {fmt_hint}")
+            display.warning(f"Format check: {fmt_hint}")
             cont = input("  Continue anyway? (y/N): ").strip().lower()
             if cont != "y":
                 return 1
 
         display.step("Validating key against API (live check)...")
-        live_ok, live_err = validate_key_live(provider, api_key)
-        if live_ok:
-            print(f"  {C.GREEN}Key is valid.{C.RESET}")
-        else:
-            print(f"  {C.YELLOW}Key validation failed: {live_err}{C.RESET}")
-            print(f"\n  Troubleshooting for {info['label']}:")
-            for tip in get_troubleshoot_guide(provider):
-                print(f"    - {tip}")
-            cont = input("\n  Store anyway? (y/N): ").strip().lower()
-            if cont != "y":
+        res = validate_key_detailed(provider, api_key, getattr(args, "provider_url", None),
+                                    getattr(args, "model", None))
+        if _report_key_check(provider, res, info) != 0:
+            default_yes = res["status"] == "unverified"    # could not check ≠ bad key
+            prompt = "  Store anyway? (Y/n): " if default_yes else "  Store anyway? (y/N): "
+            cont = input("\n" + prompt).strip().lower()
+            if not (cont == "y" or (default_yes and cont == "")):
                 return 1
 
         if store.save(provider, api_key):
@@ -273,7 +301,7 @@ def handle_config(args, display: PhaseDisplay) -> int:
             return 1
 
     if args.remove_api:
-        provider = args.remove_api.lower()
+        provider = canonical_provider(args.remove_api)
         if store.remove(provider):
             print(f"  {C.GREEN}Removed API key for {provider}.{C.RESET}")
         else:
@@ -302,9 +330,36 @@ def handle_config(args, display: PhaseDisplay) -> int:
                 print(f"  {C.CYAN}{name}{C.RESET}")
         return 0
 
-    print("  Use --list-providers, --set-api <provider>, --remove-api <provider>, "
+    print("  Use --list-providers, --set-api <provider>, --test-api <provider>, --remove-api <provider>, "
           "--save-profile <name>, or --list-profiles")
     return 0
+
+
+def _report_key_check(provider: str, res: dict, info: dict) -> int:
+    """Print the outcome of a live key check. Returns 0 only when the key is usable now."""
+    from cloudaudit.config_mgr.key_manager import get_troubleshoot_guide
+    status = res.get("status")
+    if status == "valid":
+        model = f" (model: {res['model']})" if res.get("model") else ""
+        print(f"  {C.GREEN}Key is valid.{C.RESET}{model}")
+        return 0
+    if status == "quota":
+        print(f"  {C.YELLOW}Key is genuine, but the account has no remaining quota / credit.{C.RESET}")
+        print(f"  {C.GREY}{res.get('error', '')}{C.RESET}")
+        print("  Scans will use the offline local intelligence engine until quota is restored.")
+    elif status == "unverified" and provider == "ollama":
+        print(f"  {C.YELLOW}Ollama is not reachable — is `ollama serve` running?{C.RESET}")
+        print(f"  {C.GREY}{res.get('error', '')}{C.RESET}")
+    elif status == "unverified":
+        print(f"  {C.YELLOW}Could not verify the key — this does NOT mean the key is invalid.{C.RESET}")
+        print(f"  {C.GREY}{res.get('error', '')}{C.RESET}")
+    else:
+        print(f"  {C.RED}The provider rejected this key.{C.RESET}")
+        print(f"  {C.GREY}{res.get('error', '')}{C.RESET}")
+    print(f"\n  Troubleshooting for {info.get('label', provider)}:")
+    for tip in get_troubleshoot_guide(provider):
+        print(f"    - {tip}")
+    return 1
 
 
 # ── Named config profiles (--profile) ───────────────────────────────────────────
@@ -435,6 +490,9 @@ def handle_selftest(args, display: PhaseDisplay) -> int:
         ("Private Key Block",  "-----BEGIN RSA PRIVATE KEY-----\nMIIFAKE1234567890NOTREALKEYDATA\n-----END RSA PRIVATE KEY-----", "PRIVATE_KEY"),
         ("Hardcoded Password", 'password = "N0tARealPassword!23"', "HARDCODED_PASSWORD"),
         ("Database URL",       "postgres://admin:S3cretFakePW9@db.internal.example:5432/prod", "DATABASE_URL"),
+        ("Stripe Live Key",    "stripe = " + "sk_" + "live_" + "9aK2mQ7xL4pR8tY1wZ6nC3vB", "STRIPE_SECRET_KEY"),
+        ("Slack Token",        "slack: " + "xox" + "b-" + "2048161234-" + "7Hq2LmN9pRsT4vWx", "SLACK_TOKEN"),
+        ("URL Credentials",    "remote = https://deploy:" + "Gx7pQ2mZ9vK4" + "@git.internal.corp/app.git", "BASIC_AUTH_URL"),
     ]
 
     display.section_header("CLOUDAUDIT SELF-TEST")
@@ -462,6 +520,30 @@ def handle_selftest(args, display: PhaseDisplay) -> int:
             f"  [{status}] {label:<22} "
             f"detection={'yes' if detected else 'no ':<3}  redaction={'yes' if redacted_ok else 'no ':<3}"
         )
+
+    # ── Local intelligence engine (offline — no API key) ─────────────────────
+    from cloudaudit.intelligence.local_ai import LocalIntelligence, generate_summary, looks_like_placeholder
+    local = LocalIntelligence()
+    sem_sample = 'db_password: "Tr0ub4dor&3xQ9"\nverify = False\n'
+    try:
+        local_findings = local.analyse_file(sem_sample, "selftest://app.yml", FileType.CONFIG, [])
+        rules = {f.rule_name for f in local_findings}
+        sem_secret = sem_sample.split('"')[1]
+        checks = [
+            ("Semantic Secret",     "SEMANTIC_SECRET_ASSIGNMENT" in rules
+                                    and all(sem_secret not in f.match for f in local_findings)),
+            ("Config Audit",        "TLS_VERIFICATION_DISABLED" in rules),
+            ("Placeholder Filter",  looks_like_placeholder("your_api_key_here")
+                                    and not scanner.scan('password = "changeme"', "selftest://x", FileType.OTHER)),
+            ("Offline Summary",     "Executive Summary" in generate_summary(
+                                        {"findings": [f.to_dict() for f in local_findings], "risk_score": 5.0})),
+        ]
+    except Exception as exc:
+        checks = [(f"Local engine raised: {exc}", False)]
+    for label, ok in checks:
+        all_ok = all_ok and ok
+        status = f"{C.GREEN}PASS{C.RESET}" if ok else f"{C.RED}FAIL{C.RESET}"
+        print(f"  [{status}] {label:<22} local intelligence engine")
 
     print()
     if all_ok:
@@ -500,14 +582,15 @@ def run_update_check(display: PhaseDisplay, skip: bool = False) -> None:
 
 def interactive_ai_setup(display: PhaseDisplay) -> tuple[Optional[str], Optional[str]]:
     from cloudaudit.config_mgr.key_manager import (
-        SecureKeyStore, PROVIDER_INFO, validate_key_format, validate_key_live, get_troubleshoot_guide
+        SecureKeyStore, PROVIDER_INFO, validate_key_format, validate_key_detailed, normalize_api_key,
     )
 
     print(f"\n  {C.CYAN}{C.BOLD}AI-Powered Analysis{C.RESET}")
-    print("  CloudAudit can use AI for semantic file analysis and executive summary generation.")
-    print("  Without AI, the built-in heuristic engine is used instead.\n")
+    print("  CloudAudit's local intelligence engine (semantic analysis, correlation, executive")
+    print("  summary) always runs offline and needs no API key.")
+    print("  Optionally, an AI provider can add a second opinion on high-value files.\n")
 
-    enable = input("  Enable AI analysis? (y/N): ").strip().lower()
+    enable = input("  Also use an external AI provider? (y/N): ").strip().lower()
     if enable != "y":
         return None, None
 
@@ -520,16 +603,19 @@ def interactive_ai_setup(display: PhaseDisplay) -> tuple[Optional[str], Optional
         print(f"    {i}) {info['label']:<25} {C.GREY}{info['get_key']}{C.RESET}{C.GREEN}{stored}{C.RESET}")
 
     try:
-        choice = int(input("\n  Select provider [1-5]: ").strip())
+        choice = int(input(f"\n  Select provider [1-{len(providers)}]: ").strip())
         if not 1 <= choice <= len(providers):
             raise ValueError
         provider_name, info = providers[choice - 1]
     except (ValueError, IndexError):
-        display.warning("Invalid selection. Using heuristic analysis.")
+        display.warning("Invalid selection. Using the local intelligence engine.")
         return None, None
 
     if provider_name == "ollama":
         return "ollama", None
+    if provider_name == "custom":
+        display.warning("Custom endpoints need --provider custom --provider-url URL [--model NAME] on the command line.")
+        return None, None
 
     # Check stored key
     stored_key = store.get(provider_name)
@@ -542,21 +628,23 @@ def interactive_ai_setup(display: PhaseDisplay) -> tuple[Optional[str], Optional
         print(f"  {C.GREY}{info['hint']}{C.RESET}")
 
     import getpass
-    api_key = getpass.getpass("  Enter API key (or press Enter to skip): ")
-    if not api_key.strip():
+    api_key = normalize_api_key(getpass.getpass("  Enter API key (or press Enter to skip): "))
+    if not api_key:
         return None, None
+
+    fmt_ok, fmt_hint = validate_key_format(provider_name, api_key)
+    if not fmt_ok:
+        display.warning(f"Format check: {fmt_hint}")
 
     # Live validation
     print("  Validating key...")
-    live_ok, live_err = validate_key_live(provider_name, api_key)
-    if live_ok:
-        print(f"  {C.GREEN}Key validated successfully.{C.RESET}")
-    else:
-        print(f"  {C.YELLOW}Validation returned: {live_err}{C.RESET}")
-        for tip in get_troubleshoot_guide(provider_name):
-            print(f"    - {tip}")
-        cont = input("  Use anyway? (y/N): ").strip().lower()
-        if cont != "y":
+    res = validate_key_detailed(provider_name, api_key)
+    if _report_key_check(provider_name, res, info) != 0:
+        if res["status"] in ("invalid", "quota"):
+            print("  Continuing with the local intelligence engine.")
+            return None, None
+        cont = input("  Use this key anyway? (Y/n): ").strip().lower()
+        if cont not in ("", "y"):
             return None, None
 
     save = input("  Save key securely for future sessions? (y/N): ").strip().lower()
@@ -670,13 +758,32 @@ async def _run_docker_scan(args) -> ScanStats:
         is_public=True,
         notes=notes,
     )
+    # Same run-level intelligence as storage scans: calibrate, aggregate, correlate.
+    from cloudaudit.ai.providers import ProviderChain
+    from cloudaudit.intelligence.local_ai import (
+        LocalIntelligence, aggregate_findings, correlate_findings, rank_files,
+    )
+    try:
+        LocalIntelligence.calibrate(findings)
+        findings = aggregate_findings(findings)
+        findings.extend(correlate_findings(findings))
+    except Exception as exc:
+        logging.getLogger("cloudaudit.cli").debug("Local intelligence pass skipped: %s", exc)
+
     stats.findings = findings
-    stats.findings.sort(key=lambda f: -f.severity.int_value)
+    stats.findings.sort(key=lambda f: (-f.severity.int_value, -f.confidence))
     stats.total_files = summary.files_scanned
     stats.scanned_files = summary.files_scanned
     stats.archive_files = summary.layers_scanned
     stats.errors = summary.errors
     stats.risk_score = RiskScorer().compute(stats.findings, stats.container_info)
+    try:
+        stats.file_risk = rank_files(f.to_dict() for f in stats.findings)
+        resp = ProviderChain().generate_executive_summary(json.dumps(stats.to_dict(), default=str))
+        stats.ai_summary = resp.text
+        stats.ai_engine = f"{resp.provider}/{resp.model}"
+    except Exception as exc:
+        logging.getLogger("cloudaudit.cli").debug("Summary generation skipped: %s", exc)
     return stats
 
 
@@ -708,6 +815,8 @@ def _build_audit_config(args, url, provider, api_key, output_base, quiet, verbos
         api_key=api_key,
         ollama_url=args.ollama_url,
         ollama_model=args.ollama_model,
+        provider_url=getattr(args, "provider_url", None),
+        ai_model=getattr(args, "model", None),
         output_base=output_base,
         output_format=args.format,
         min_severity=args.min_severity,
@@ -723,8 +832,6 @@ def _build_audit_config(args, url, provider, api_key, output_base, quiet, verbos
         webhook_url=getattr(args, "webhook_url", None),
         fail_on_severity=getattr(args, "fail_on_severity", None),
     )
-    if getattr(args, "provider_url", None):
-        config.__dict__["provider_url"] = args.provider_url
     return config
 
 
@@ -916,6 +1023,62 @@ def _run_interval(
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def _resolve_ai_settings(args, display: PhaseDisplay) -> tuple[Optional[str], Optional[str]]:
+    """
+    Work out which AI provider and key a scan will use — and say so.
+
+    Every dead end here (no key, unknown key type, custom endpoint without a
+    URL) resolves to the offline local intelligence engine with one clear
+    message, instead of surfacing later as a provider error mid-scan.
+    """
+    from cloudaudit.config_mgr.key_manager import (
+        canonical_provider, detect_provider_from_key, normalize_api_key,
+        resolve_api_key, validate_key_format,
+    )
+
+    if getattr(args, "no_ai", False):
+        display.step("--no-ai: using the offline local intelligence engine only")
+        return None, None
+
+    provider = canonical_provider(getattr(args, "provider", None)) or None
+    explicit = normalize_api_key(getattr(args, "api_key", None)) or None
+
+    if explicit and not provider:
+        provider = detect_provider_from_key(explicit)
+        if provider:
+            display.step(f"Detected a {provider} key — using --provider {provider}")
+        elif getattr(args, "provider_url", None):
+            provider = "custom"
+        else:
+            display.warning(
+                "--api-key was given without --provider and the provider cannot be inferred from this key. "
+                "Add --provider {gemini,openai,claude,deepseek,custom}. Using the local intelligence engine."
+            )
+            return None, None
+
+    if not provider:
+        return None, None
+    if provider == "ollama":
+        return provider, None
+    if provider == "custom" and not getattr(args, "provider_url", None):
+        display.warning("--provider custom requires --provider-url. Using the local intelligence engine.")
+        return None, None
+
+    api_key, source = resolve_api_key(provider, explicit)
+    if not api_key:
+        display.warning(
+            f"No API key found for {provider} (checked --api-key, environment, .cloudaudit.env and the key store). "
+            f"Run: cloudaudit config --set-api {provider}. Using the local intelligence engine."
+        )
+        return None, None
+
+    display.step(f"Using {provider} key from {source}")
+    fmt_ok, fmt_hint = validate_key_format(provider, api_key)
+    if not fmt_ok:
+        display.warning(f"Key format check: {fmt_hint}")
+    return provider, api_key
+
+
 def main(argv=None) -> int:
     parser = build_parser()
     args   = parser.parse_args(argv)
@@ -975,28 +1138,18 @@ def main(argv=None) -> int:
 
     display.phase("init")
 
-    # Check for stored keys first
-    from cloudaudit.config_mgr.key_manager import SecureKeyStore
-    store = SecureKeyStore()
-
-    provider = getattr(args, "provider", None)
-    api_key  = getattr(args, "api_key", None)
-
-    # Load from secure store if not on CLI
-    if provider and not api_key:
-        api_key = store.get(provider)
-        if api_key:
-            display.step(f"Using stored key for {provider}")
+    provider, api_key = _resolve_ai_settings(args, display)
 
     # Interactive AI setup if no provider given and we're in a terminal.
     # stdin can report isatty()==True yet still not be a real interactive
     # session (e.g. some CI runners, redirected-but-tty-like environments) —
-    # fall back to heuristic analysis instead of crashing with an EOFError.
-    if not provider and not quiet and sys.stdin.isatty():
+    # fall back to the local engine instead of crashing with an EOFError.
+    if (not provider and not quiet and sys.stdin.isatty()
+            and not getattr(args, "no_ai", False) and not getattr(args, "api_key", None)):
         try:
             provider, api_key = interactive_ai_setup(display)
         except EOFError:
-            display.warning("No interactive input available — using heuristic analysis.")
+            display.warning("No interactive input available — using the local intelligence engine.")
             provider, api_key = None, None
 
     display.phase_done()

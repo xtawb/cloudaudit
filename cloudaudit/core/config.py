@@ -80,6 +80,8 @@ class AuditConfig:
     api_key:     Optional[str] = None     # NEVER logged
     ollama_url:  str = "http://localhost:11434"
     ollama_model: str = "llama3"
+    provider_url: Optional[str] = None    # --provider-url (OpenAI-compatible endpoints)
+    ai_model:     Optional[str] = None    # --model (override automatic model selection)
 
     # ── Workspace ─────────────────────────────────────────────────────────────
     workspace: str = ARCHIVE_WORKSPACE
@@ -116,30 +118,11 @@ class AuditConfig:
         """
         Resolve AI provider API key from:
           1. Explicit --api-key flag (self.api_key)
-          2. Environment variable  (e.g. GEMINI_API_KEY)
+          2. Environment variable  (e.g. GEMINI_API_KEY, plus known alternates)
           3. .cloudaudit.env file in the current directory
-        Never logs the resolved value.
+          4. The encrypted key store (cloudaudit config --set-api)
+        The value is normalised (whitespace/quotes/"Bearer " stripped) and never logged.
         """
-        if self.api_key:
-            return self.api_key
-
-        if not self.provider:
-            return None
-
-        env_var = PROVIDER_ENV_KEYS.get(self.provider.lower(), "")
-        if env_var:
-            val = os.environ.get(env_var)
-            if val:
-                return val
-
-        env_file = Path(".cloudaudit.env")
-        if env_file.exists():
-            for line in env_file.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip() == env_var:
-                    return v.strip().strip("\"'")
-
-        return None
+        from cloudaudit.config_mgr.key_manager import resolve_api_key
+        key, _source = resolve_api_key(self.provider, self.api_key)
+        return key

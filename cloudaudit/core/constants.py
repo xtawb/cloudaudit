@@ -1,6 +1,6 @@
 """cloudaudit — Framework Constants"""
 
-__version__     = "1.2.0"
+__version__     = "1.3.0"
 __tool_name__   = "CloudAudit"
 __author__      = "xtawb"
 __author_url__  = "https://linktr.ee/xtawb"
@@ -49,30 +49,36 @@ PROVIDER_ENV_KEYS = {
     "openai":   "OPENAI_API_KEY",
     "claude":   "ANTHROPIC_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "custom":   "CLOUDAUDIT_API_KEY",
     "ollama":   "",
 }
 
+# Ordered model candidates per provider (first that works is used and then
+# remembered for the rest of the run). A retired or unavailable model costs one
+# failed request, not the AI phase. Override any of this with --model.
+# Gemini normally discovers its models live; this list is only the offline fallback.
 PROVIDER_MODEL_FALLBACKS = {
     "gemini": [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.0-pro",
-        "gemini-pro",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-flash-latest",
     ],
     "openai": [
+        "gpt-4.1-mini",
         "gpt-4o-mini",
+        "gpt-5-mini",
         "gpt-4o",
-        "gpt-4-turbo",
-        "gpt-3.5-turbo",
     ],
     "claude": [
-        "claude-3-haiku-20240307",
-        "claude-3-sonnet-20240229",
-        "claude-3-opus-20240229",
+        "claude-haiku-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-4-5",
+        "claude-sonnet-4-5",
     ],
     "deepseek": [
         "deepseek-chat",
-        "deepseek-coder",
+        "deepseek-reasoner",
     ],
 }
 

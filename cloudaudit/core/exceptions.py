@@ -33,6 +33,10 @@ class ProviderAuthError(ProviderError):
     """Missing or invalid AI provider API key."""
 
 
+class ProviderQuotaError(ProviderError):
+    """The API key is valid but the account has no remaining quota / credit."""
+
+
 class ArchiveError(AuditError):
     """Archive extraction failure."""
 

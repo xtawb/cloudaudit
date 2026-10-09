@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -42,6 +43,16 @@ def redact(value: str, keep_chars: int = 6) -> str:
     if len(value) <= keep_chars:
         return "***"
     return value[:keep_chars] + "***"
+
+
+# Per-process random salt: value hashes are only ever compared within one run,
+# so they cannot be used to brute-force a secret from a saved report/log.
+_HASH_SALT = os.urandom(16)
+
+
+def secret_hash(value: str) -> str:
+    """Salted, truncated hash of a raw secret value (in-memory comparison only)."""
+    return hashlib.sha256(_HASH_SALT + value.encode("utf-8", "replace")).hexdigest()[:20]
 
 
 def elapsed(start: float) -> float:

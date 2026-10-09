@@ -1,17 +1,22 @@
 """
-cloudaudit — Risk Scoring Engine
+cloudaudit — Risk Scoring Engine (v3)
 
-Computes a 0–10 composite risk score based on:
-  - Finding severity distribution
-  - Presence of credential types (cloud keys vs. generic)
-  - Container type (S3 public vs. Azure private-but-listed)
-  - Archive findings (secondary exposure vectors)
-  - Compliance reference coverage
+Computes a 0–10 composite risk score from:
+  - Severity, weighted by each finding's confidence (a 30%-confidence guess
+    no longer weighs the same as a validated provider token)
+  - Finding category
+  - Diminishing returns per rule (the 400th email address in a CSV adds
+    almost nothing; the first AWS key adds a lot)
+  - Compound exposures identified by the correlation engine
+  - Presence of validated cloud / provider credentials
+  - Whether the container is publicly listable
 """
 
 from __future__ import annotations
 
-from typing import List
+import math
+from collections import defaultdict
+from typing import Dict, List
 
 from cloudaudit.core.models import ContainerInfo, Finding, FindingCategory, Severity
 
@@ -36,32 +41,67 @@ class RiskScorer:
         FindingCategory.INFRASTRUCTURE_INF: 0.8,
         FindingCategory.METADATA_LEAKAGE:   0.6,
         FindingCategory.PUBLIC_ACCESS:      0.9,
-        FindingCategory.COMPLIANCE:         0.5,
+        FindingCategory.COMPLIANCE:         0.7,
     }
+
+    # Each further finding of the same rule contributes this fraction of the previous one.
+    _RULE_DECAY = 0.6
+
+    _CLOUD_CRED_RULES = (
+        "AWS_ACCESS_KEY", "AWS_SECRET_KEY", "GCP_SERVICE_ACCOUNT_KEY", "AZURE_STORAGE_KEY",
+        "GITHUB_PAT", "GITLAB_TOKEN", "STRIPE_SECRET_KEY", "DIGITALOCEAN_TOKEN", "VAULT_TOKEN",
+        "PRIVATE_KEY", "DATABASE_URL", "CONNECTION_STRING_PASSWORD", "AGE_SECRET_KEY",
+    )
 
     def compute(self, findings: List[Finding], container: ContainerInfo) -> float:
         if not findings:
             # Public listing with no findings still carries baseline risk
             return 2.0 if container.is_public else 0.5
 
-        raw = 0.0
+        by_rule: Dict[str, List[float]] = defaultdict(list)
         for f in findings:
             weight = self._SEV_WEIGHTS.get(f.severity, 0.0)
             mult   = self._CAT_MULT.get(f.category, 1.0)
-            raw   += weight * mult
+            conf   = f.confidence if f.confidence > 0 else 0.5
+            by_rule[f.rule_name].append(weight * mult * (0.4 + 0.6 * min(conf, 1.0)))
+
+        raw = 0.0
+        for weights in by_rule.values():
+            for i, w in enumerate(sorted(weights, reverse=True)):
+                if i > 40:
+                    break
+                raw += w * (self._RULE_DECAY ** i)
 
         # Normalise to 0–10 scale using a soft cap
-        import math
-        score = 10 * (1 - math.exp(-raw / 8))
+        score = 10 * (1 - math.exp(-raw / 9))
 
-        # Bonus: if critical cloud credential findings exist → push toward 10
-        has_cloud_creds = any(
-            f.rule_name in ("AWS_ACCESS_KEY", "AWS_SECRET_KEY", "GCP_SERVICE_ACCOUNT_KEY",
-                            "AZURE_STORAGE_KEY", "GITHUB_PAT")
-            and f.severity == Severity.CRITICAL
-            for f in findings
-        )
-        if has_cloud_creds:
+        confident = [f for f in findings if f.confidence >= 0.7]
+
+        # Floor: a confident critical credential is never a "moderate" result.
+        if any(
+            f.severity == Severity.CRITICAL
+            and f.category in (FindingCategory.SECRET_EXPOSURE, FindingCategory.CREDENTIAL_FILE)
+            and f.scanner not in ("MisconfigAnalyzer",)
+            for f in confident
+        ):
+            score = max(score, 7.5)
+
+        # Floor: validated cloud / provider credentials → push toward 10
+        if any(
+            f.rule_name in self._CLOUD_CRED_RULES and f.severity == Severity.CRITICAL
+            for f in confident
+        ):
             score = max(score, 8.5)
+
+        # Floor: compound exposures (complete credential pairs, secrets files)
+        if any(f.rule_name.startswith("COMPOUND_") and f.severity == Severity.CRITICAL for f in findings):
+            score = max(score, 9.0)
+
+        # Ceiling: nothing above Low severity cannot be a high-risk result
+        if all(f.severity in (Severity.LOW, Severity.INFORMATIONAL) for f in findings):
+            score = min(score, 3.5 if container.is_public else 2.5)
+
+        if not container.is_public:
+            score *= 0.85
 
         return round(min(score, 10.0), 2)

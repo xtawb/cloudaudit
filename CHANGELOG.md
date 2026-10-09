@@ -5,6 +5,129 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.3.0] — 2026-10-09
+
+The "works without an API key" release: a new offline Local Intelligence
+Engine, a rebuilt AI provider layer, and a round of detection-accuracy fixes.
+
+### Added
+
+* **Local Intelligence Engine** (`intelligence/local_ai.py`) — runs offline on
+  every scan, no API key required:
+  * statistical **token classifier** (charset-normalised entropy, English
+    bigram language model, character-class transitions, benign-format
+    recognition) used to tell secrets from hashes, UUIDs, identifiers and paths;
+  * **semantic key/value analysis** across env / YAML / JSON / INI / XML / code
+    that understands key names (`dbPassword` vs `password_min_length`) and
+    ignores placeholders, `${VAR}` references and prose;
+  * **config auditor** with 27 IaC / container / server / database
+    misconfiguration rules;
+  * **JWT inspection** (expired / still valid / non-expiring / unsigned);
+  * **confidence calibration** by path context, **noise aggregation**, and a
+    **correlation engine** that reports compound exposures;
+  * **file risk ranking** (`scan.file_risk`) and a data-driven **executive
+    summary** with key risk drivers, a phased remediation plan and compliance
+    impact.
+* **31 new credential formats** — Slack, Stripe, SendGrid, Twilio, OpenAI,
+  Anthropic, npm, PyPI, DigitalOcean, Hugging Face, Telegram, Shopify, Google
+  OAuth, Entra ID, Databricks, Vault, Terraform Cloud, Docker Hub, Grafana,
+  New Relic, Mailgun, Square, Postman, Linear, age, GitLab runner tokens,
+  URL-embedded credentials, connection-string passwords, US SSNs (51 rules, up
+  from 20).
+* **19 new sensitive-file inventory rules** — SSH keys, key stores, Git
+  metadata, kubeconfig, Docker config, database dumps, shell history,
+  `.tfvars`, secrets files, backups, network captures and more.
+* `cloudaudit config --test-api PROVIDER` — tests the key a scan would use and
+  distinguishes *valid*, *no quota*, *rejected* and *could not verify*.
+* `--model NAME` to override automatic model selection; `--no-ai` to force the
+  offline engine; `--provider anthropic` alias; the provider is auto-detected
+  from `--api-key` when `--provider` is omitted.
+* Report fields `scan.ai_engine`, `scan.ai_status`, `scan.file_risk`, and
+  per-finding `occurrences`.
+* A unit-test suite (`python -m unittest discover -s tests -t .`), and
+  `cloudaudit selftest` now also exercises the offline engine.
+
+### Fixed — API keys
+
+* Modern key formats were rejected by the format check (`sk-proj-…` OpenAI
+  keys contain `-`/`_`; Gemini `AQ.` keys). The check is now advisory.
+* Pasted keys are normalised — whitespace, newlines, quotes, zero-width
+  characters, `Bearer ` and `NAME=value` wrappers were stored verbatim and
+  later rejected by the provider.
+* Saving a key when the encrypted store could not be decrypted silently wiped
+  every other provider's key. The unreadable store is now kept aside, and
+  writes are atomic.
+* `validate_key_live` reported every failure as "invalid", including network
+  errors and exhausted quota, and returned no reason for OpenAI/Claude.
+* Key lookup was inconsistent between the CLI and the engine; there is now one
+  resolver (flag → env var → alternates → `.cloudaudit.env` → key store).
+  `.cloudaudit.env` matching with an empty variable name is fixed.
+* `--api-key` without `--provider` was silently ignored in non-interactive
+  runs; `--provider custom` without `--provider-url` produced an "unknown
+  provider" error; the interactive menu was hardcoded to `[1-5]`.
+* API keys could appear in logged provider errors (Gemini puts the key in the
+  request URL). Error text is now scrubbed.
+
+### Fixed — AI
+
+* **An invalid key aborted the summary** — auth errors were re-raised through
+  the provider chain, leaving `[Summary generation failed]` in the report and
+  repeating the failed request for every analysed file. A circuit breaker now
+  disables the provider once and the local engine takes over.
+* **Truncated audit JSON** — scan data was cut at 12,000 characters before
+  being parsed, producing invalid JSON for any non-trivial scan; the fallback
+  summary then reported "Unknown" and 0 findings. Remote providers now receive
+  a compact, always-valid digest; the local engine reads the full data.
+* **Gemini** — model selection could pick TTS / image / preview models or a
+  `pro` model with zero free-tier quota, with no fallback; quota errors were
+  reported as an invalid key; `response.text` could raise on blocked or empty
+  candidates; thinking models returned empty text at the default token limit.
+* **OpenAI** — newer models reject `max_tokens`; the request now adapts
+  between `max_tokens` and `max_completion_tokens`. Custom endpoints were sent
+  `gpt-4o-mini` regardless of what they serve.
+* **Claude** — the fallback list contained only retired model IDs, and the
+  reply was read from `content[0]` even when that block was not text.
+* **Ollama** — a missing model failed every request; an installed model is now
+  used instead.
+* AI replies wrapped in markdown fences or prose are parsed correctly; AI
+  findings are de-duplicated against deterministic findings, categorised, and
+  have any echoed token-shaped text redacted.
+* No retry or back-off existed for rate limits or transient errors.
+* The duplicate legacy implementation in `providers/ai_provider.py` (stale
+  model names, no error handling) is replaced by a shim over the maintained one.
+
+### Fixed — Detection
+
+* **False CRITICAL "duplicate secret" findings** — duplicates were detected by
+  hashing the redacted match (first six characters), so every pair of JWTs or
+  `AKIA…` keys was "the same secret". A salted hash of the raw value is used.
+* `INTERNAL_IP` and `SSH_CONFIG` never fired under the default entropy
+  threshold; `SSH_CONFIG` matched the word "host" in any text.
+* `ENV_VARIABLE_SECRET` captured the variable name instead of the value.
+* Placeholders (`changeme`, `your_api_key_here`, `${VAR}`, AWS documentation
+  keys) were reported as secrets.
+* `CREDIT_CARD` matched any 16-digit number (now Luhn-validated);
+  `AZURE_SAS_TOKEN` matched any `sig=` parameter; `EMAIL_ADDRESS` matched
+  `icon@2x.png`.
+* Every occurrence of a value was a separate finding, and several rules
+  reported the same text; emails and IP addresses were counted as "credential
+  reuse".
+* Lockfiles and minified bundles produced one entropy finding per line.
+* Context snippets could contain complete tokens shorter than 40 characters.
+* Line-number lookup re-scanned the file for every match (quadratic on large
+  files).
+
+### Changed
+
+* Risk score v3: confidence-weighted, diminishing returns per rule, explicit
+  floors for confident credentials and compound exposures.
+* Docker image scans now get the same calibration, aggregation, correlation
+  and executive summary as storage scans.
+* `pyproject.toml`: AI SDKs are extras only (`gemini`, `openai`, `deepseek`,
+  `claude`, `all`) — malformed `extra ==` markers removed from core dependencies.
+
+---
+
 ## [1.2.0] — 2026
 
 ### Added

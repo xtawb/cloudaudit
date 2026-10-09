@@ -232,6 +232,13 @@ def print_audit_summary(display: PhaseDisplay, stats) -> None:
     risk_color = (C.RED if stats.risk_score >= 7 else
                   C.YELLOW if stats.risk_score >= 4 else C.GREEN)
     display.kv("Risk Score",         f"{stats.risk_score:.1f} / 10",  risk_color + C.BOLD)
+    engine = getattr(stats, "ai_engine", "")
+    if engine:
+        label = "Local Intelligence (offline)" if engine.startswith("heuristic/") else engine
+        display.kv("Analysis Engine", label)
+    status = getattr(stats, "ai_status", "")
+    if status and ("disabled" in status or "unavailable" in status):
+        display.warning(f"AI: {status}")
 
     print()
     for sev_name, color in [

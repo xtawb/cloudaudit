@@ -135,4 +135,5 @@ def _finding_from_dict(fd: Dict[str, Any]) -> Finding:
         scanner=fd.get("scanner", "SecretScanner"),
         from_archive=fd.get("from_archive", False),
         archive_path=fd.get("archive_path", ""),
+        occurrences=fd.get("occurrences", 1),
     )

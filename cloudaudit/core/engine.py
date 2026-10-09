@@ -11,9 +11,10 @@ Orchestrates all audit phases:
   Phase 6: Image EXIF metadata extraction
   Phase 7: Duplicate / reuse detection
   Phase 8: Cloud misconfiguration analysis
-  Phase 9: Risk scoring v2
-  Phase 10: AI executive summary
-  Phase 11: Report output
+  Phase 9: Local intelligence — calibration, aggregation, correlation
+  Phase 10: Risk scoring v3 + file risk ranking
+  Phase 11: Executive summary (AI provider, or the local engine)
+  Phase 12: Report output
 """
 
 from __future__ import annotations
@@ -35,7 +36,11 @@ from cloudaudit.intelligence.advanced import (
     EntropyHunter, SecretDeduplicator, ExposureMapper,
     MisconfigAnalyzer, MisconfigFinding,
 )
-from cloudaudit.ai.providers import ProviderChain, build_provider_chain
+from cloudaudit.ai.providers import ProviderChain, build_provider_chain, scrub_secrets
+from cloudaudit.intelligence.local_ai import (
+    LocalIntelligence, aggregate_findings, correlate_findings, is_credential_finding,
+    is_noise_file, rank_files,
+)
 from cloudaudit.ai.analyzer import AIFileAnalyzer, AnomalyScorer
 from cloudaudit.core import checkpoint as checkpoint_mod
 from cloudaudit.core.constants import CHECKPOINT_SAVE_INTERVAL
@@ -83,6 +88,8 @@ class AuditEngine:
         self._deduper   = SecretDeduplicator()
         self._mapper    = ExposureMapper()
         self._misconfig = MisconfigAnalyzer()
+        self._local     = LocalIntelligence()     # offline semantic engine — always on
+        self._ai_init_note = ""
         self._provider_chain: Optional[ProviderChain] = None
         self._ai_analyzer: Optional[AIFileAnalyzer] = None
         self._anomaly: Optional[AnomalyScorer] = None
@@ -152,6 +159,7 @@ class AuditEngine:
                 await self._phase_analyse(http, exposed_files)
 
         self._phase_dedup()
+        self._phase_intelligence()
         self._apply_baseline()
         self._apply_min_severity()
         self._phase_score()
@@ -292,23 +300,40 @@ class AuditEngine:
     # ── AI initialisation ──────────────────────────────────────────────────────
 
     def _init_ai_provider(self) -> None:
+        """
+        Build the provider chain. Nothing here can abort the audit: a missing
+        key, a missing SDK, a rejected key or an unreachable endpoint all end
+        with the local intelligence engine doing the work, and the reason is
+        recorded on ``ScanStats.ai_status`` so the user is told once, clearly.
+        """
+        provider = self._config.provider
         try:
             api_key = self._config.resolve_api_key()
             self._provider_chain = build_provider_chain(
-                self._config.provider,
+                provider,
                 api_key,
-                getattr(self._config, "provider_url", None),
+                self._config.provider_url,
                 self._config.ollama_url,
                 self._config.ollama_model,
+                model=self._config.ai_model,
             )
-            self._ai_analyzer = AIFileAnalyzer(self._provider_chain)
-            self._anomaly     = AnomalyScorer(self._provider_chain)
         except Exception as exc:
-            logger.warning("AI provider init failed: %s — using heuristic", exc)
-            from cloudaudit.ai.providers import ProviderChain
+            self._ai_init_note = scrub_secrets(f"{provider} unavailable — {exc}")[:300]
+            logger.warning("AI provider %s. Continuing with the local intelligence engine.", self._ai_init_note)
             self._provider_chain = ProviderChain()
-            self._ai_analyzer    = AIFileAnalyzer(self._provider_chain)
-            self._anomaly        = AnomalyScorer(self._provider_chain)
+
+        # Verify the credential once, up front — a bad key then costs one
+        # request and one warning instead of one failure per scanned file.
+        if self._provider_chain.has_remote and not self._config.dry_run:
+            check = self._provider_chain.preflight()
+            if check.get("status") == "valid":
+                logger.info("AI provider %s ready (model: %s)", provider, check.get("model") or "auto")
+            elif check.get("status") == "unverified":
+                logger.info("AI provider %s could not be verified up front (%s) — will try during the scan.",
+                            provider, check.get("error", "")[:120])
+
+        self._ai_analyzer = AIFileAnalyzer(self._provider_chain)
+        self._anomaly     = AnomalyScorer(self._provider_chain)
 
     # ── Phase 1: Container Detection ──────────────────────────────────────────
 
@@ -478,27 +503,13 @@ class AuditEngine:
                         self._deduper.register(pf)
                     det_findings.extend(plugin_findings)
 
-                # Entropy analysis
-                entropy_hits = self._entropy.scan(content, threshold=self._config.min_entropy)
-                for hit in entropy_hits:
-                    # Convert entropy hits into informational findings if not already caught
-                    if not any(f.line_number == hit.line_number for f in det_findings):
-                        det_findings.append(Finding(
-                            file_url=ef.url,
-                            file_name=url_filename(ef.url),
-                            file_type=ft,
-                            category=FindingCategory.SECRET_EXPOSURE,
-                            rule_name="HIGH_ENTROPY_STRING",
-                            description=f"High-entropy string detected (entropy={hit.entropy:.2f}) — possible undiscovered secret",
-                            severity=Severity.LOW,
-                            match=hit.value,
-                            context=hit.context,
-                            line_number=hit.line_number,
-                            recommendation="Review this string — high entropy may indicate an undocumented credential or key.",
-                            compliance_refs=["NIST IA-5"],
-                            confidence=0.55,
-                            scanner="EntropyHunter",
-                        ))
+                # Local intelligence: semantic key/value analysis, config audit,
+                # JWT inspection. Offline, always on — no API key involved.
+                det_findings.extend(self._local.analyse_file(content, ef.url, ft, det_findings))
+
+                # Entropy analysis, filtered by the statistical token classifier so
+                # hashes, UUIDs, identifiers and lockfile noise are not reported.
+                det_findings.extend(self._entropy_findings(content, ef.url, ft, det_findings))
 
                 # Register for deduplication
                 for f in det_findings:
@@ -517,7 +528,7 @@ class AuditEngine:
                 if (
                     self._ai_analyzer
                     and self._ai_analyzer.should_analyse_with_ai(ef.url, ft)
-                    and (det_findings or ft in (FileType.ENVIRONMENT, FileType.CERTIFICATE))
+                    and (det_findings or ft in (FileType.ENVIRONMENT, FileType.CERTIFICATE, FileType.CONFIG))
                 ):
                     loop = asyncio.get_running_loop()
                     ai_findings = await loop.run_in_executor(
@@ -536,6 +547,41 @@ class AuditEngine:
             except Exception as exc:
                 self._stats.errors.append(f"Error: {ef.url} — {exc}")
                 logger.debug("Error analysing %s: %s", ef.url, exc)
+
+    def _entropy_findings(
+        self, content: str, url: str, ft: FileType, existing: List[Finding]
+    ) -> List[Finding]:
+        if is_noise_file(url):
+            return []
+        taken = {f.line_number for f in existing if f.line_number and is_credential_finding(f)}
+        out: List[Finding] = []
+        for hit in self._entropy.scan(
+            content, threshold=self._config.min_entropy, classifier=self._local.classifier
+        ):
+            if hit.line_number in taken:
+                continue
+            strong = hit.score >= 0.8
+            out.append(Finding(
+                file_url=url,
+                file_name=url_filename(url),
+                file_type=ft,
+                category=FindingCategory.SECRET_EXPOSURE,
+                rule_name="HIGH_ENTROPY_STRING",
+                description=(
+                    f"High-entropy string detected (entropy={hit.entropy:.2f}, "
+                    f"secret-likelihood {hit.score:.0%}) — possible undiscovered secret"
+                ),
+                severity=Severity.MEDIUM if strong else Severity.LOW,
+                match=hit.value,
+                context=hit.context,
+                line_number=hit.line_number,
+                recommendation="Review this string — high entropy may indicate an undocumented credential or key.",
+                compliance_refs=["NIST IA-5"],
+                confidence=round(min(0.35 + 0.5 * hit.score, 0.85), 3),
+                scanner="EntropyHunter",
+                value_hash=hit.value_hash,
+            ))
+        return out
 
     async def _handle_image(self, http: HTTPClient, ef: ExposedFile) -> None:
         try:
@@ -560,7 +606,9 @@ class AuditEngine:
                     continue
 
                 ft       = FileClassifier.classify(rel_path)
-                findings = self._secret.scan(text, f"{ef.url}!/{rel_path}", ft)
+                member_url = f"{ef.url}!/{rel_path}"
+                findings = self._secret.scan(text, member_url, ft)
+                findings.extend(self._local.analyse_file(text, member_url, ft, findings))
                 for f in findings:
                     f.from_archive = True
                     f.archive_path = rel_path
@@ -578,39 +626,78 @@ class AuditEngine:
         reuse = self._deduper.get_reuse_findings(min_files=3)
         self._stats.findings.extend(dups + reuse)
 
-    # ── Phase 8: Risk scoring ─────────────────────────────────────────────────
+    # ── Phase 9: Local intelligence (run-level) ───────────────────────────────
+
+    def _phase_intelligence(self) -> None:
+        """
+        Calibrate confidence from context, collapse bulk noise, then correlate
+        what is left into compound exposures. Each step is isolated so a bug
+        in one can never cost the audit its findings.
+        """
+        before = len(self._stats.findings)
+        try:
+            LocalIntelligence.calibrate(self._stats.findings)
+        except Exception as exc:
+            logger.debug("Calibration skipped: %s", exc)
+        try:
+            self._stats.findings = aggregate_findings(self._stats.findings)
+        except Exception as exc:
+            logger.debug("Aggregation skipped: %s", exc)
+        try:
+            compound = correlate_findings(self._stats.findings)
+            self._stats.findings.extend(compound)
+            if compound:
+                logger.info("Correlation engine identified %d compound exposure(s)", len(compound))
+        except Exception as exc:
+            logger.debug("Correlation skipped: %s", exc)
+        if len(self._stats.findings) != before:
+            logger.info("Local intelligence: %d raw finding(s) -> %d after aggregation/correlation",
+                        before, len(self._stats.findings))
+
+    # ── Phase 10: Risk scoring ────────────────────────────────────────────────
 
     def _phase_score(self) -> None:
         self._stats.findings.sort(
-            key=lambda f: _SEV_ORDER.get(f.severity.value, 99)
+            key=lambda f: (_SEV_ORDER.get(f.severity.value, 99), -f.confidence)
         )
         if self._stats.container_info:
             self._stats.risk_score = self._scorer.compute(
                 self._stats.findings, self._stats.container_info
             )
+        try:
+            self._stats.file_risk = rank_files(f.to_dict() for f in self._stats.findings)
+        except Exception as exc:
+            logger.debug("File risk ranking skipped: %s", exc)
         logger.info("Risk score: %.1f/10", self._stats.risk_score)
 
     # ── Phase 9: AI executive summary ────────────────────────────────────────
 
     async def _phase_ai_summary(self) -> None:
-        if not self._provider_chain:
-            return
+        import json
+        chain = self._provider_chain or ProviderChain()
+        # Full, valid JSON. (This used to be cut to 12,000 characters, which
+        # produced invalid JSON for any non-trivial scan: the fallback summary
+        # then saw an empty document and reported "0 findings".) Remote
+        # providers receive a compact digest built from this; the local
+        # engine reads all of it.
+        audit_json = json.dumps(self._stats.to_dict(), default=str)
         try:
-            import json
-            audit_json = json.dumps(self._stats.to_dict(), indent=2, default=str)[:12000]
-            loop    = asyncio.get_running_loop()
-            resp    = await loop.run_in_executor(
-                None,
-                self._provider_chain.generate_executive_summary,
-                audit_json,
-            )
-            self._stats.ai_summary = resp.text
-            if resp.provider != "heuristic":
-                logger.info("AI summary: provider=%s model=%s latency=%dms",
-                            resp.provider, resp.model, resp.latency_ms)
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(None, chain.generate_executive_summary, audit_json)
         except Exception as exc:
-            logger.warning("AI summary failed: %s", exc)
-            self._stats.ai_summary = "[Summary generation failed]"
+            logger.warning("Executive summary via provider failed (%s) — generating it locally.",
+                           scrub_secrets(str(exc))[:200])
+            resp = ProviderChain().generate_executive_summary(audit_json)
+
+        self._stats.ai_summary = resp.text
+        self._stats.ai_engine  = f"{resp.provider}/{resp.model}"
+        status = chain.status
+        if self._ai_init_note:
+            status = f"{self._ai_init_note}. Local intelligence engine used instead"
+        self._stats.ai_status = status
+        if resp.provider != "heuristic":
+            logger.info("AI summary: provider=%s model=%s latency=%dms",
+                        resp.provider, resp.model, resp.latency_ms)
 
     # ── Report output ──────────────────────────────────────────────────────────
 

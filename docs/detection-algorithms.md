@@ -184,3 +184,51 @@ def scan(file_content: bytes, file_meta: dict) -> list[Finding]:
 Discovered plugins run alongside the built-in scanners during Phase 4
 (Concurrent Content Analysis) and their findings flow through the same
 `AdvancedIntelligence` aggregation, risk scoring, and reporting pipeline.
+
+## v1.3.0 Detection Changes
+
+### New credential formats
+
+Slack tokens and webhooks, Discord webhooks, Stripe live keys, Twilio,
+SendGrid, OpenAI, Anthropic, npm, PyPI, DigitalOcean, Hugging Face, Telegram
+bot tokens, Shopify, Google OAuth client secrets, Microsoft Entra ID client
+secrets, Databricks, HashiCorp Vault, Terraform Cloud, Docker Hub, Grafana,
+New Relic, Mailgun, Square, Postman, Linear, `age` secret keys, GitLab
+runner/deploy tokens, URLs with embedded credentials, ADO.NET-style connection
+strings, and US Social Security numbers (context-gated). Fixed-format tokens
+carry a fixed high confidence rather than an entropy estimate.
+
+### Accuracy fixes
+
+- **Placeholders are not secrets** — `changeme`, `your_api_key_here`,
+  `${VAR}`, `<password>`, `xxxxxxxx`, AWS documentation keys
+  (`AKIA…EXAMPLE`) and similar never produce a finding.
+- **Structured rules fire again** — `INTERNAL_IP` and `SSH_CONFIG` were
+  silently disabled by the entropy gate under the default threshold.
+- **`SSH_CONFIG`** no longer matches the word "host" in prose.
+- **`ENV_VARIABLE_SECRET`** now reports the *value* (it captured the variable
+  name).
+- **`CREDIT_CARD`** requires a valid Luhn checksum; **`JWT_TOKEN`** requires a
+  decodable JOSE header; **`AZURE_SAS_TOKEN`** requires SAS fields nearby;
+  **`EMAIL_ADDRESS`** ignores `image@2x.png` and example domains.
+- **One finding per value per file** — repeats are counted
+  (`occurrences`), and a generic rule yields when a specific rule already
+  matched the same text.
+- **Context snippets** redact token-shaped strings of 24+ characters (was
+  40+), assignment values, and URL passwords.
+
+### Duplicate / reuse detection
+
+Duplicates are detected by a salted hash of the **raw** value held only in
+memory. Previously the *redacted* match (first six characters) was hashed, so
+any two secrets sharing a prefix — every JWT, every `AKIA…` key — were reported
+as a CRITICAL duplicate. Emails, IP addresses and entropy hits no longer count
+as "credentials" for duplicate or reuse findings, and a value repeated inside
+a single file is not cross-file duplication.
+
+### Entropy analysis
+
+High-entropy candidates are passed through the local token classifier (see
+[AI Engine](ai-engine.md#local-intelligence-engine-offline)) and are skipped
+entirely in lockfiles, minified bundles, source maps and vendored trees.
+

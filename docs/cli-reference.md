@@ -50,8 +50,10 @@
 
 | Flag | Default | Description |
 |---|---|---|
-| `--provider NAME` | | `gemini`, `openai`, `claude`, `deepseek`, `ollama`, `custom` |
-| `--api-key KEY` | | API key for the selected provider |
+| `--provider NAME` | | `gemini`, `openai`, `claude` (`anthropic`), `deepseek`, `ollama`, `custom`. Optional — the offline Local Intelligence Engine runs without it |
+| `--api-key KEY` | | API key for the selected provider. If `--provider` is omitted, the provider is detected from the key's prefix |
+| `--model NAME` | auto | Override automatic AI model selection |
+| `--no-ai` | off | Never contact an AI provider — offline engine only |
 | `--provider-url URL` | | Base URL for custom OpenAI-compatible endpoints |
 | `--ollama-url URL` | `http://localhost:11434` | Ollama server |
 | `--ollama-model MODEL` | `llama3` | Ollama model name |
@@ -90,6 +92,7 @@
 | Subcommand | Description |
 |---|---|
 | `cloudaudit config --set-api / --list-providers / --remove-api PROVIDER` | Manage encrypted AI provider API keys |
+| `cloudaudit config --test-api PROVIDER [--model NAME] [--provider-url URL]` | Test the key a scan would use and report *valid* / *no quota* / *rejected* / *could not verify* |
 | `cloudaudit config --save-profile NAME` | Save the flags given on this command line as a named profile |
 | `cloudaudit config --list-profiles` | List saved profile names |
 | `cloudaudit diff <old_report.json> <new_report.json>` | Print new / resolved / unchanged findings between two JSON reports |

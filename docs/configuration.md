@@ -62,13 +62,44 @@ OPENAI_API_KEY=sk-...
 
 ### Key Resolution Order
 
-`AuditConfig.resolve_api_key()` resolves the API key in this order:
+`AuditConfig.resolve_api_key()` (backed by
+`config_mgr.key_manager.resolve_api_key`) resolves the API key in this order:
 
 1. `--api-key` CLI flag
-2. The provider-specific environment variable (e.g. `GEMINI_API_KEY`)
-3. A `.cloudaudit.env` file in the current working directory
-4. The encrypted key store (`~/.cloudaudit/config.enc`), loaded automatically
-   by the CLI before scanning if `--provider` is given without `--api-key`
+2. The provider-specific environment variable (e.g. `GEMINI_API_KEY`), then
+   known alternates (`GOOGLE_API_KEY` for Gemini, `CLAUDE_API_KEY` for Claude)
+3. A `.cloudaudit.env` file in the working directory
+4. The encrypted key store (`cloudaudit config --set-api`)
+
+Whatever the source, the value is **normalised** before use: surrounding
+whitespace and quotes, zero-width characters, a leading `Bearer `, and a
+pasted `NAME=value` / `export NAME=value` wrapper are removed. The CLI prints
+which source the key came from (never the key itself).
+
+If no key is found for the selected provider, the scan does **not** fail: it
+continues with the offline Local Intelligence Engine and says so.
+
+### Testing a key
+
+```bash
+cloudaudit config --test-api gemini
+```
+
+reports one of four outcomes, which need different actions:
+
+| Outcome | Meaning | Action |
+|---------|---------|--------|
+| **valid** | The provider accepted the key | none |
+| **no quota** | The key is genuine, the account has no credit / quota | add billing or wait; scans use the offline engine meanwhile |
+| **rejected** | The provider refused the key | re-create the key; check it belongs to the provider you selected |
+| **could not verify** | The check could not run (offline, rate limited, SDK missing) | not evidence of a bad key — retry later |
+
+### Provider / key mix-ups
+
+The provider is inferred from the key prefix when `--provider` is omitted
+(`AIza…`/`AQ.…` → Gemini, `sk-ant-…` → Claude, `sk-proj-…` → OpenAI), and a
+key that clearly belongs to a different provider than the one selected is
+flagged before any request is made.
 
 ## Named Profiles (`--profile`)
 
