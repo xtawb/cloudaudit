@@ -102,6 +102,17 @@ Powered by {__author__} | {__author_url__}
     ci_p.add_argument("--force", action="store_true", help="Overwrite the workflow file if it already exists")
 
     # ── selftest subcommand ──────────────────────────────────────────────────
+    bench_p = sub.add_parser(
+        "benchmark",
+        help="Measure detection precision / recall on the built-in labelled synthetic corpus",
+    )
+    bench_p.add_argument("--json", action="store_true", help="Print machine-readable results")
+    bench_p.add_argument("--min-precision", type=float, metavar="0-1",
+                         help="Exit non-zero if full-pipeline precision is below this (CI gate)")
+    bench_p.add_argument("--min-recall", type=float, metavar="0-1",
+                         help="Exit non-zero if full-pipeline recall is below this (CI gate)")
+    bench_p.add_argument("--seed", type=int, help="Corpus seed (default: the fixed built-in seed)")
+
     sub.add_parser(
         "selftest",
         help="Run the secret scanner and redaction pipeline against known-bad synthetic "
@@ -145,6 +156,14 @@ Powered by {__author__} | {__author_url__}
                    help="Resume a previously interrupted crawl from a --checkpoint file")
     p.add_argument("--dry-run", action="store_true",
                    help="Enumerate discovered files (size/type) without downloading or analysing content")
+    p.add_argument("--aws-inventory", action="store_true",
+                   help="Owner mode for S3: list the bucket with YOUR AWS credentials (boto3, read-only), then "
+                        "analyse only the objects that are anonymously readable. Finds public objects in "
+                        "buckets whose listing is not public. Target: s3://bucket[/prefix] or the bucket URL")
+    p.add_argument("--aws-inventory-max", type=int, default=5000, metavar="N",
+                   help="Maximum objects to list with --aws-inventory (default: 5000)")
+    p.add_argument("--no-documents", action="store_true",
+                   help="Do not download and analyse PDF / Office documents (analysed by default)")
     p.add_argument("--aws-acl-check", action="store_true",
                    help="Enrich AWS S3 findings with real ACL/policy detail via boto3 (optional dependency, "
                         "requires AWS credentials in the environment)")
@@ -553,6 +572,40 @@ def handle_selftest(args, display: PhaseDisplay) -> int:
     return 0 if all_ok else 1
 
 
+# ── benchmark subcommand ─────────────────────────────────────────────────────
+
+def handle_benchmark(args, display: PhaseDisplay) -> int:
+    """Score the detection pipeline on the built-in labelled corpus (offline)."""
+    from cloudaudit.intelligence import benchmark as bench
+
+    corpus = bench.build_corpus(args.seed) if getattr(args, "seed", None) is not None else bench.build_corpus()
+    positives = sum(1 for s in corpus if s.secret_lines)
+    rules_only = bench.run_benchmark(deep=False, corpus=corpus)
+    full = bench.run_benchmark(deep=True, corpus=corpus)
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "version": __version__,
+            "corpus": {"planted_secrets": positives, "secret_free_files": len(corpus) - positives},
+            "results": [rules_only.to_dict(), full.to_dict()],
+        }, indent=2))
+    else:
+        display.section_header("DETECTION BENCHMARK")
+        print()
+        for line in bench.format_report([rules_only, full], (positives, len(corpus) - positives)).split("\n"):
+            print(f"  {line}")
+        print()
+
+    failed = []
+    if getattr(args, "min_precision", None) is not None and full.precision < args.min_precision:
+        failed.append(f"precision {full.precision:.1%} < required {args.min_precision:.1%}")
+    if getattr(args, "min_recall", None) is not None and full.recall < args.min_recall:
+        failed.append(f"recall {full.recall:.1%} < required {args.min_recall:.1%}")
+    for msg in failed:
+        print(f"  {C.RED}[FAIL]{C.RESET} {msg}", file=sys.stderr)
+    return 1 if failed else 0
+
+
 # ── Update check ───────────────────────────────────────────────────────────────
 
 def run_update_check(display: PhaseDisplay, skip: bool = False) -> None:
@@ -829,6 +882,9 @@ def _build_audit_config(args, url, provider, api_key, output_base, quiet, verbos
         resume_path=getattr(args, "resume", None),
         dry_run=getattr(args, "dry_run", False),
         aws_acl_check=getattr(args, "aws_acl_check", False),
+        scan_documents=not getattr(args, "no_documents", False),
+        aws_inventory=getattr(args, "aws_inventory", False),
+        aws_inventory_max=getattr(args, "aws_inventory_max", 5000),
         webhook_url=getattr(args, "webhook_url", None),
         fail_on_severity=getattr(args, "fail_on_severity", None),
     )
@@ -1073,6 +1129,13 @@ def _resolve_ai_settings(args, display: PhaseDisplay) -> tuple[Optional[str], Op
         return None, None
 
     display.step(f"Using {provider} key from {source}")
+    if source == "--api-key":
+        from cloudaudit.core.constants import PROVIDER_ENV_KEYS
+        env_name = PROVIDER_ENV_KEYS.get(provider) or "the provider's environment variable"
+        display.step(
+            f"Tip: a key passed on the command line is visible in shell history and process lists — "
+            f"prefer {env_name} or `cloudaudit config --set-api {provider}`"
+        )
     fmt_ok, fmt_hint = validate_key_format(provider, api_key)
     if not fmt_ok:
         display.warning(f"Key format check: {fmt_hint}")
@@ -1080,6 +1143,14 @@ def _resolve_ai_settings(args, display: PhaseDisplay) -> tuple[Optional[str], Op
 
 
 def main(argv=None) -> int:
+    # Legacy Windows consoles (cp1252 and friends) cannot encode every character
+    # the reports use; degrade to "?" instead of crashing mid-scan.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
     parser = build_parser()
     args   = parser.parse_args(argv)
 
@@ -1110,6 +1181,10 @@ def main(argv=None) -> int:
     if args.subcommand == "selftest":
         return handle_selftest(args, display)
 
+    # ── benchmark subcommand ─────────────────────────────────────────────────
+    if args.subcommand == "benchmark":
+        return handle_benchmark(args, display)
+
     # ── Named profile (--profile NAME) — merges into args before scan setup ──
     try:
         apply_profile(parser, args)
@@ -1126,6 +1201,19 @@ def main(argv=None) -> int:
     if getattr(args, "interval", None) and (not args.url or getattr(args, "targets_file", None) or getattr(args, "scan_docker_image", None)):
         print(f"{C.RED}  [ERROR]{C.RESET} --interval is only supported for single-target scans (-u URL).", file=sys.stderr)
         return 1
+
+    if getattr(args, "aws_inventory", False):
+        from cloudaudit.intelligence import aws_inventory as _inv
+        if not args.url or getattr(args, "targets_file", None):
+            print(f"{C.RED}  [ERROR]{C.RESET} --aws-inventory needs a single S3 target (-u s3://bucket[/prefix]).", file=sys.stderr)
+            return 1
+        if not _inv.parse_bucket(args.url):
+            print(f"{C.RED}  [ERROR]{C.RESET} --aws-inventory: {args.url!r} is not an S3 bucket reference "
+                  f"(use s3://bucket[/prefix] or an *.amazonaws.com bucket URL).", file=sys.stderr)
+            return 1
+        if not _inv.is_available():
+            print(f"{C.RED}  [ERROR]{C.RESET} --aws-inventory requires boto3. Run: pip install cloudaudit[aws]", file=sys.stderr)
+            return 1
 
     if not getattr(args, "confirm_ownership", False):
         print_ownership_notice(quiet)

@@ -4,20 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cloudaudit"
-version = "1.3.0"
-description = "Enterprise Cloud Storage Posture Auditing Framework — Read-Only Defensive"
+version = "1.4.0"
+description = "Read-only cloud storage exposure auditing — secret detection, misconfiguration analysis and offline intelligence"
+readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Your Org Security Team" }]
+authors = [{ name = "xtawb" }]
 license = { text = "MIT" }
+keywords = ["security", "cloud", "s3", "secrets", "audit", "posture", "devsecops"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
 dependencies = [
     "aiohttp>=3.9",
-    "aiofiles>=23.0",
-    "python-magic>=0.4.27",
     "Pillow>=10.0",      # EXIF extraction
     "cryptography>=41.0",
     "pyyaml>=6.0",
     "rich>=13.0",        # Terminal UI + --tui live dashboard
-    "jinja2>=3.1",       # HTML report templating
 ]
 
 [project.optional-dependencies]
@@ -26,9 +37,19 @@ gemini = ["google-genai>=1.0"]
 openai = ["openai>=1.0"]
 deepseek = ["openai>=1.0"]
 claude = ["anthropic>=0.34"]
-aws = ["boto3>=1.28"]
-pdf = ["xhtml2pdf>=0.2.11"]
-all = ["google-genai>=1.0", "openai>=1.0", "anthropic>=0.34", "boto3>=1.28", "xhtml2pdf>=0.2.11"]
+aws = ["boto3>=1.28"]                # --aws-acl-check, --aws-inventory
+pdf = ["xhtml2pdf>=0.2.11"]          # --format pdf (report output)
+documents = ["pypdf>=4.0"]           # better PDF text extraction (a built-in extractor is used otherwise)
+all = [
+    "google-genai>=1.0", "openai>=1.0", "anthropic>=0.34",
+    "boto3>=1.28", "xhtml2pdf>=0.2.11", "pypdf>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/xtawb/cloudaudit"
+Documentation = "https://cloudaudit.readthedocs.io"
+Changelog = "https://github.com/xtawb/cloudaudit/blob/main/CHANGELOG.md"
+Issues = "https://github.com/xtawb/cloudaudit/issues"
 
 [project.scripts]
 cloudaudit = "cloudaudit.cli.main:main"

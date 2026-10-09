@@ -27,7 +27,7 @@ from cloudaudit.core.constants import DEFAULT_DOCKER_REGISTRY, MAX_DOCKER_LAYER_
 from cloudaudit.core.models import FileType, Finding
 from cloudaudit.scanners.archive_extractor import ArchiveExtractor
 from cloudaudit.scanners.file_classifier import FileClassifier
-from cloudaudit.scanners.secret_scanner import SecretScanner
+from cloudaudit.core.pipeline import ContentAnalyzer
 from cloudaudit.utils.http_client import HTTPClient
 
 logger = logging.getLogger("cloudaudit.docker_registry")
@@ -197,6 +197,12 @@ class DockerRegistryClient:
             raise
 
 
+_SYSTEM_PATH_RE = re.compile(
+    r"^(?:usr/(?:lib|lib64|share|include|libexec|src)|lib|lib64|bin|sbin|usr/s?bin|var/lib/(?:dpkg|apt|rpm)|var/cache"
+    r"|etc/(?:ssl/certs|ca-certificates|alternatives|pki)|proc|sys|dev)/"
+)
+
+
 async def scan_docker_image(
     http: HTTPClient,
     image_ref: str,
@@ -230,7 +236,8 @@ async def scan_docker_image(
     if not layers and "fsLayers" in manifest:  # legacy v1 schema
         layers = [{"digest": l["blobSum"]} for l in manifest.get("fsLayers", [])]
 
-    scanner = SecretScanner()
+    # Same pipeline as storage scans (rules + local intelligence + classified entropy).
+    analyzer = ContentAnalyzer()
     extractor = ArchiveExtractor()
 
     for layer in layers:
@@ -270,7 +277,10 @@ async def scan_docker_image(
             except Exception:
                 continue
             ft = FileClassifier.classify(rel_path)
-            file_findings = scanner.scan(text, f"{pseudo_url}!/{rel_path}", ft)
+            # Deep analysis is for application content; OS / package-manager trees
+            # get the credential rules only (cost and noise, no signal).
+            deep = not _SYSTEM_PATH_RE.match(rel_path.lstrip("./"))
+            file_findings = analyzer.analyse(text, f"{pseudo_url}!/{rel_path}", ft, deep=deep)
             for f in file_findings:
                 f.from_archive = True
                 f.archive_path = rel_path

@@ -232,3 +232,102 @@ High-entropy candidates are passed through the local token classifier (see
 [AI Engine](ai-engine.md#local-intelligence-engine-offline)) and are skipped
 entirely in lockfiles, minified bundles, source maps and vendored trees.
 
+## Accuracy Benchmark (v1.4.0)
+
+Source: `intelligence/benchmark.py` · command: `cloudaudit benchmark`
+
+A labelled synthetic corpus: files with one planted secret on a known line,
+and secret-free files that *look* secret-ish (placeholders, references,
+digests, UUIDs, public keys, certificates, lockfiles, translations, …).
+Scoring is per finding — a planted secret reported is a true positive, a
+planted secret missed is a false negative, and a secret-class finding
+anywhere else is a false positive. All values are generated from a seeded
+PRNG at runtime; no credential literal is stored.
+
+### What it measured
+
+| Build | Corpus | Precision | Recall |
+|-------|--------|-----------|--------|
+| v1.3.0 as released | 54 secrets / 39 clean files | **54.9%** | 92.6% |
+| v1.4.0 | same corpus | 100% | 100% |
+| v1.4.0 — **hold-out, first run** (12 secrets / 12 clean files written *after* tuning) | hold-out only | **38.5%** | 83.3% |
+| v1.4.0 final | 67 secrets / 51 clean files, 60 seeds | 100% | 98.5% |
+
+Read these honestly:
+
+- The 100% rows are a **tuned** result: the rules were fixed against those
+  exact cases. They work as a regression gate, not as an accuracy claim.
+- The hold-out row is the closest thing here to a generalisation estimate,
+  and it is much lower. Its failures were then fixed too (so it is no longer
+  held out) — expect real-world precision to sit well below the tuned figure,
+  and report the false positives you meet so they can be added as cases.
+- Typed-token recall is close to "does the regex match its own format".
+- One known miss is kept in the corpus on purpose: a password passed as a
+  positional argument (`auth=("user", "…")`) has no naming hint at all.
+
+### What changed because of it
+
+**False positives removed**
+
+- PEM / PGP armored blocks are never reported line by line (a certificate
+  produced one entropy finding per body line).
+- SSH public keys, Stripe publishable keys, analytics ids, Sentry DSNs,
+  blockchain addresses, content-hashed asset names, route paths ending in an
+  id, and multi-segment semantic versions are recognised as benign.
+- A bare hex string with no secret-bearing name is an identifier or digest,
+  whatever its length.
+- With no naming hint, a random token shorter than 24 characters is treated
+  as an identifier (order ids, CSS-module hashes).
+- Values that are code — `get_random_secret_key()`, `os.getenv("X")`,
+  `self._token`, `argv[1]` — and leetspeak placeholders (`s3cr3t`,
+  `p@ssw0rd`) are not secrets.
+- Key names that carry the word *token* / *key* without being credentials:
+  `next_page_token`, `csrf_token`, `public_key`, `cache_key`, …
+- Translations and prose under secret-ish keys (`"password": "Mot de passe"`).
+- `docs/` only lowers confidence for written documentation, not for office
+  documents or data files stored there.
+
+**Misses fixed**
+
+- **Length-aware entropy floor.** Shannon entropy cannot exceed
+  `log2(length)`: a perfectly random 24-character key tops out near 4.5 bits,
+  so the fixed 4.5 threshold silently dropped most real 20–32 character keys
+  in `GENERIC_API_KEY` and the entropy stage. The floor is now
+  `min(configured, k · log2(length))`.
+- New rules: `URL_QUERY_SECRET`, `AUTHORIZATION_HEADER`, `JWK_PRIVATE_KEY`,
+  `PLAINTEXT_SECURESTRING`.
+- A weak, human-chosen password under a strong key name in a config file
+  (`password = hunter42`) is reported (Medium); the same shape in source code
+  is treated as a variable reference.
+- `SHELL_HISTORY_SECRET` reported the line *above* the command.
+
+## Document Analysis (v1.4.0)
+
+Source: `scanners/document_extractor.py`
+
+| Format | Method |
+|--------|--------|
+| `.docx` `.xlsx` `.pptx` (and macro variants) | OOXML parts are tag-stripped with paragraph / row boundaries kept; runs inside a paragraph are joined, so a password Word split across formatting runs is reassembled. Spreadsheet **data connections** (`xl/connections.xml`) are read from attributes |
+| `.odt` `.ods` `.odp` | `content.xml`, same approach |
+| `.pdf` | `pypdf` when installed (`cloudaudit[documents]`); otherwise a built-in extractor for plain and Flate-compressed text streams |
+| `.doc` `.xls` `.ppt` `.rtf` | printable ASCII / UTF-16 string extraction |
+
+The extracted text goes through the normal pipeline. Findings carry
+`[extracted document text: <method>]` and no line number. With
+`--deep-metadata`, author-type document properties are reported as
+`DOCUMENT_AUTHOR_METADATA`.
+
+Documents are untrusted input: no entity-expanding XML parser is used, every
+decompression is size-capped, and archive entry counts are bounded.
+
+## Owner-Side S3 Inventory (v1.4.0)
+
+Source: `intelligence/aws_inventory.py` · flag: `--aws-inventory`
+
+An anonymous crawl can only audit a bucket whose listing is public. Objects
+that are publicly readable inside a bucket that is *not* listable are invisible
+to it — and are the more common real exposure. In owner mode the bucket is
+listed with the owner's own credentials (two read-only calls), each object is
+checked with an unauthenticated `HEAD`, and only the anonymously readable
+objects are downloaded and analysed. Private objects are counted, never read.
+A `PUBLIC_OBJECTS_IN_UNLISTED_BUCKET` finding summarises the result.

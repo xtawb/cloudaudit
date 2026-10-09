@@ -15,7 +15,7 @@ MM.           MM 8M     M8 MM    MM 8MI    MM     AbmmmqMA   MM    MM 8MI    MM 
        
 ```
 
-[![Version](https://img.shields.io/badge/version-1.3.0-blue?style=flat-square&logo=git)](#)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue?style=flat-square&logo=git)](#)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue?style=flat-square&logo=python&logoColor=white)](#)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](#)
 [![Docs](https://img.shields.io/readthedocs/cloudaudit?style=flat-square&logo=readthedocs)](#)
@@ -48,6 +48,18 @@ CloudAudit is designed for **defensive internal use only**. Every design decisio
 - **Secrets never stored raw**: All pattern matches are redacted before being written to findings or transmitted to AI providers.
 - **No exploitation guidance**: AI providers are explicitly prompted to produce only defensive remediation recommendations.
 - **AI is optional**: the built-in **Local Intelligence Engine** performs semantic analysis, correlation and executive-summary generation entirely offline — no API key, no data leaving the machine.
+
+### What's new in v1.4.0
+
+| Area | Change |
+|------|--------|
+| **Measured accuracy** | `cloudaudit benchmark` scores detection on a labelled synthetic corpus (precision / recall / F1) and gates CI. It found that v1.3.0's full pipeline was only **55% precise** — the fixes below came from it |
+| **Precision** | Certificates, public keys, SSH public keys, publishable keys, content-hashed asset names, runtime-generated values, translations and prose no longer produce findings |
+| **Recall** | Entropy thresholds now scale with length (a fixed 4.5 silently dropped most real 20–32 character keys); new rules for URL query secrets, `Authorization` headers, private JWKs and PowerShell SecureStrings |
+| **Documents** | PDF, Word, Excel, PowerPoint and OpenDocument files are text-extracted and analysed (standard library only; `pypdf` optional) |
+| **Owner mode for S3** | `--aws-inventory` lists a bucket with *your* AWS credentials and finds objects that are publicly readable even though the bucket cannot be listed |
+| **Docker images** | Image layers now go through the same semantic analysis as storage objects |
+| **Project health** | GitHub Actions CI (tests + self-test + benchmark gate, Linux and Windows); three unused dependencies removed — `python-magic` broke installs on Windows |
 
 ### What's new in v1.3.0
 
@@ -350,42 +362,37 @@ Crawler (async)                            ScanStats accumulate
 graph TD
     cloudaudit["cloudaudit"]
     aiohttp["aiohttp — async HTTP"]
-    aiofiles["aiofiles — async file I/O"]
-    pythonmagic["python-magic — MIME type detection"]
     Pillow["Pillow — EXIF metadata extraction"]
     cryptography["cryptography — Fernet key encryption"]
     pyyaml["pyyaml — YAML config parsing"]
     rich["rich — terminal progress UI"]
-    jinja2["jinja2 — HTML report templating"]
     google_genai["google-genai (optional) — Gemini provider"]
     openai["openai (optional) — OpenAI / DeepSeek / custom endpoint"]
     anthropic["anthropic (optional) — Claude provider"]
     py7zr["py7zr (optional) — 7-Zip archive extraction"]
+    boto3["boto3 (optional) — --aws-acl-check / --aws-inventory"]
+    pypdf["pypdf (optional) — richer PDF text extraction"]
 
     cloudaudit --> aiohttp
-    cloudaudit --> aiofiles
-    cloudaudit --> pythonmagic
     cloudaudit --> Pillow
     cloudaudit --> cryptography
     cloudaudit --> pyyaml
     cloudaudit --> rich
-    cloudaudit --> jinja2
     cloudaudit --> google_genai
     cloudaudit --> openai
     cloudaudit --> anthropic
     cloudaudit --> py7zr
+    cloudaudit --> boto3
+    cloudaudit --> pypdf
 ```
 
 ```
 cloudaudit
 ├── aiohttp          — async HTTP (GET/HEAD/OPTIONS only)
-├── aiofiles         — async file I/O for archive workspace
-├── python-magic     — MIME type detection
 ├── Pillow           — EXIF metadata extraction
 ├── cryptography     — Fernet key encryption (Fernet + PBKDF2)
 ├── pyyaml           — YAML config parsing
 ├── rich             — terminal progress UI
-├── jinja2           — HTML report templating
 │
 ├── [optional] google-genai    — Gemini provider (modern SDK)
 ├── [optional] openai          — OpenAI / DeepSeek / custom endpoint
@@ -808,6 +815,9 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
 | `--custom-patterns FILE` | | YAML file of additional secret regex patterns to merge into the scanner |
 | `--checkpoint FILE` | | Periodically save crawl/analysis progress to this file |
 | `--resume FILE` | | Resume a previously interrupted scan from a `--checkpoint` file |
+| `--aws-inventory` | off | **Owner mode (S3):** list the bucket with your AWS credentials (boto3, read-only) and analyse only the objects that are anonymously readable. Target `s3://bucket[/prefix]` |
+| `--aws-inventory-max N` | 5000 | Maximum objects listed with `--aws-inventory` |
+| `--no-documents` | off | Skip PDF / Office document analysis (on by default) |
 | `--aws-acl-check` | off | Enrich AWS S3 findings with real ACL/policy detail via `boto3` (optional dependency) |
 | `--targets-file FILE` | | Batch-scan multiple targets, one URL per line |
 | `--batch-concurrency N` | 1 | Targets scanned concurrently with `--targets-file` |
@@ -851,6 +861,7 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ \
 | `cloudaudit config --set-api / --test-api / --list-providers / --remove-api` | Manage and test encrypted API keys |
 | `cloudaudit config --save-profile NAME / --list-profiles` | Save current flags as a named profile, or list saved profiles |
 | `cloudaudit diff <old_report.json> <new_report.json>` | Print new / resolved / unchanged findings between two JSON reports |
+| `cloudaudit benchmark [--json] [--min-precision X] [--min-recall Y]` | Measure detection precision / recall on the built-in labelled corpus (offline; usable as a CI gate) |
 | `cloudaudit history [--limit N]` | List locally recorded past scans from `~/.cloudaudit/history.db` |
 | `cloudaudit init-ci [--output PATH] [--schedule CRON]` | Write a ready-to-use GitHub Actions workflow (SARIF scan + upload) |
 | `cloudaudit selftest` | Run the secret scanner and redaction pipeline against known-bad synthetic samples; prints PASS/FAIL |
@@ -994,5 +1005,5 @@ By using `--confirm-ownership`, you declare that you are authorised to audit the
 
 ---
 
-*CloudAudit v1.3.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
+*CloudAudit v1.4.0 — Next-Generation AI-Powered Cloud Security Auditing Framework*  
 *Powered by xtawb | Defensive. Intelligent. Enterprise-Grade.*

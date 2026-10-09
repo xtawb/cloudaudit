@@ -5,6 +5,81 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.4.0] — 2026-10-09
+
+Measured accuracy, document analysis, owner-side S3 inventory, and CI.
+
+### Added
+
+* **`cloudaudit benchmark`** — scores detection (precision / recall / F1) on a
+  labelled synthetic corpus of 67 planted secrets and 51 secret-free files,
+  for the pattern rules alone and for the full pipeline. `--min-precision` /
+  `--min-recall` turn it into a CI gate; `--json` for machines.
+* **Document analysis** — PDF, Word, Excel, PowerPoint, OpenDocument, legacy
+  Office and RTF files are text-extracted (standard library only; `pypdf`
+  optional via `cloudaudit[documents]`) and analysed like any other file.
+  Spreadsheet data connections are read; text split across Word runs is
+  reassembled. `--no-documents` turns it off. With `--deep-metadata`,
+  author-type document properties are reported.
+* **`--aws-inventory`** (owner mode for S3) — lists a bucket with your own AWS
+  credentials (read-only: `get_bucket_location`, `list_objects_v2`), probes
+  each object anonymously, and analyses only the publicly readable ones.
+  Finds public objects in buckets whose listing is not public
+  (`PUBLIC_OBJECTS_IN_UNLISTED_BUCKET`). Accepts `s3://bucket[/prefix]`.
+* **Shared analysis pipeline** (`core/pipeline.py`) — storage objects, archive
+  members, Docker image layers and document text now all get the same stages.
+  Docker image scans previously ran the pattern rules only.
+* New rules: `URL_QUERY_SECRET`, `AUTHORIZATION_HEADER`, `JWK_PRIVATE_KEY`,
+  `PLAINTEXT_SECURESTRING`.
+* **CI** — `.github/workflows/tests.yml` (unit tests, self-test and the
+  benchmark gate on Linux and Windows) and a manual PyPI publish workflow.
+* 27 new unit tests (89 total).
+
+### Fixed — found by the benchmark
+
+The first benchmark run scored v1.3.0's full pipeline at **54.9% precision**
+(92.6% recall). Causes, all fixed:
+
+* Certificates, PGP blocks and private-key bodies produced one entropy finding
+  per line.
+* SSH public keys, publishable keys, content-hashed asset names, route ids,
+  JWKS public parameters and multi-part version strings were reported as
+  secrets.
+* `SECRET_KEY = get_random_secret_key()` and other code expressions were
+  reported as hardcoded secrets; so were leetspeak placeholders (`s3cr3t`).
+* Translations under secret-ish keys (`"api_key": "Clé API"`) were reported.
+* AWS documentation secret keys (`…EXAMPLEKEY`) were reported.
+* **Fixed entropy threshold dropped real keys** — Shannon entropy cannot
+  exceed `log2(length)`, so the 4.5-bit threshold silently rejected most
+  random 20–32 character keys. The floor now scales with length.
+* `SHELL_HISTORY_SECRET` matched across a line break and reported the line
+  above the command.
+* Files under `docs/` had confidence lowered even when they were office
+  documents or data exports.
+
+A hold-out set written after that tuning scored 38.5% precision / 83.3%
+recall on its first run — see `docs/detection-algorithms.md` for what that
+means and what was changed in response.
+
+### Fixed — other
+
+* `python-magic`, `aiofiles` and `jinja2` were required dependencies but never
+  imported. `python-magic` failed to install on Windows without `libmagic`.
+* Output containing characters a legacy Windows console cannot encode could
+  crash the CLI; such characters now degrade to `?`.
+* `pyproject.toml` author placeholder replaced; project URLs, classifiers and
+  README metadata added.
+* A key passed with `--api-key` now prints a one-line note that command-line
+  arguments are visible in shell history and process lists.
+
+### Not included
+
+* Live validation of discovered credentials against provider APIs is
+  deliberately not implemented: CloudAudit stays read-only and never uses a
+  credential it finds.
+
+---
+
 ## [1.3.0] — 2026-10-09
 
 The "works without an API key" release: a new offline Local Intelligence

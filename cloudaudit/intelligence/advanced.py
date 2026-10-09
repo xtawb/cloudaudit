@@ -13,13 +13,14 @@ Implements:
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from cloudaudit.core.models import FileType, Finding, FindingCategory, Severity
-from cloudaudit.intelligence.local_ai import is_credential_finding
+from cloudaudit.intelligence.local_ai import is_credential_finding, key_sensitivity
 from cloudaudit.utils.helpers import calculate_entropy, redact, secret_hash, url_filename
 
 
@@ -58,11 +59,15 @@ class EntropyHunter:
     ]
 
     # Token separators
-    _SPLIT_RE = re.compile(r'[\s=:"\',;<>()\[\]{}]+')
+    _SPLIT_RE = re.compile(r'[\s=:"\',;<>()\[\]{}&?|]+')
 
     # Lines longer than this are minified bundles / embedded blobs, not config.
     MAX_LINE_LEN = 2000
     MAX_HITS_PER_FILE = 200
+    # With no naming hint at all, a short random token is far more often an
+    # identifier (order id, CSS-module hash, slug) than a credential.
+    MIN_UNHINTED_LEN = 24
+    _JWK_PUBLIC_MEMBERS = frozenset({"n", "e", "x", "y", "kid", "x5c", "x5t", "x5u", "crv", "alg", "use"})
 
     _KEY_HINT_RE = re.compile(r"""["']?([A-Za-z_][\w.\-]{1,60})["']?\s*(?:=>|:=|=|:)\s*["']?$""")
 
@@ -76,9 +81,21 @@ class EntropyHunter:
         hits: List[EntropyHit] = []
         seen: Set[str] = set()
         lines = content.split("\n")
+        # In a JSON Web Key (Set) these members are public parameters by definition.
+        is_jwk = '"kty"' in content
 
+        in_armor = False
         for line_num, line in enumerate(lines, 1):
-            if len(line) > self.MAX_LINE_LEN:
+            # PEM / PGP armored blocks: the body is base64 by construction. A private
+            # key is reported once by its header rule; certificates and public keys
+            # are not secrets at all. Never report the body line by line.
+            if line.startswith("-----BEGIN "):
+                in_armor = True
+                continue
+            if line.startswith("-----END "):
+                in_armor = False
+                continue
+            if in_armor or len(line) > self.MAX_LINE_LEN:
                 continue
             tokens = self._SPLIT_RE.split(line)
             for token in tokens:
@@ -89,15 +106,23 @@ class EntropyHunter:
                     continue
 
                 ent = calculate_entropy(token)
-                if ent < threshold or not self._has_mixed_chars(token):
+                # Shannon entropy is bounded by log2(length): a perfectly random
+                # 24-character key cannot reach 4.5 bits. With the classifier doing
+                # the real judgement, gate on entropy relative to length instead.
+                floor = threshold if classifier is None else min(threshold, 0.82 * math.log2(len(token)))
+                if ent < floor or not self._has_mixed_chars(token):
                     continue
 
                 score = 0.5
                 if classifier is not None:
                     pos = line.find(token)
                     hint = self._KEY_HINT_RE.search(line[:pos]) if pos > 0 else None
+                    if is_jwk and hint and hint.group(1) in self._JWK_PUBLIC_MEMBERS:
+                        continue
+                    if len(token) < self.MIN_UNHINTED_LEN and not (hint and key_sensitivity(hint.group(1)) > 0):
+                        continue
                     verdict = classifier.classify(token, key_hint=hint.group(1) if hint else "")
-                    if verdict.label in ("benign", "placeholder"):
+                    if verdict.label in ("benign", "placeholder", "weak"):
                         continue
                     score = verdict.score
 

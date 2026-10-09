@@ -115,3 +115,36 @@ uploads the results via `github/codeql-action/upload-sarif`.
 See [Configuration](configuration.md) for the file formats used by
 `--custom-patterns`, `--baseline`, and profiles, and
 [Reporting](reporting.md) for details on each output format.
+
+## Added in v1.4.0
+
+### Scan flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--aws-inventory` | off | Owner mode for S3. Lists the bucket with **your** AWS credentials (boto3: `get_bucket_location`, `list_objects_v2` — read-only), probes each object with an unauthenticated `HEAD`, and analyses only the objects that are anonymously readable. Target: `-u s3://bucket[/prefix]` or the bucket URL. Requires `pip install cloudaudit[aws]` |
+| `--aws-inventory-max N` | `5000` | Maximum objects listed per run |
+| `--no-documents` | off | Do not download and analyse PDF / Office documents |
+
+```bash
+# Find publicly readable objects in a bucket whose listing is NOT public
+AWS_PROFILE=audit cloudaudit -u s3://acme-assets --aws-inventory \
+    --confirm-ownership --org-name "Acme" -o report
+```
+
+### `cloudaudit benchmark`
+
+Scores the detection pipeline on the built-in labelled synthetic corpus,
+offline, and prints precision / recall / F1 for the pattern rules alone and
+for the full pipeline.
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Machine-readable output |
+| `--min-precision X` | Exit `1` if full-pipeline precision is below `X` (0–1) |
+| `--min-recall Y` | Exit `1` if full-pipeline recall is below `Y` (0–1) |
+| `--seed N` | Regenerate the corpus values with a different seed |
+
+```bash
+cloudaudit benchmark --min-precision 0.97 --min-recall 0.95   # CI gate
+```

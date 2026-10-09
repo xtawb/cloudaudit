@@ -22,6 +22,7 @@ import base64
 import bisect
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
@@ -478,6 +479,35 @@ _TYPED_CONFIDENCE = {
 for _p in _PATTERNS:
     if _p.name in _TYPED_CONFIDENCE:
         _p.base_confidence = _TYPED_CONFIDENCE[_p.name]
+    # Documentation values (…EXAMPLEKEY, xxxxxxxx) must not fire any credential rule.
+    if _p.name in ("AWS_SECRET_KEY", "AWS_SESSION_TOKEN", "GCP_API_KEY", "GCP_OAUTH_TOKEN",
+                   "AZURE_STORAGE_KEY", "GITHUB_PAT", "GITLAB_TOKEN") and _p.validation is None:
+        _p.validation = _not_placeholder
+
+_PATTERNS += [
+    Pattern(
+        name="AUTHORIZATION_HEADER",
+        pattern=r"(?i)\bAuthorization[\"']?\s*[:=]\s*[\"']?(?:Bearer|Token|Basic|ApiKey)\s+([A-Za-z0-9_\-.~+/=]{16,})",
+        description="Hardcoded Authorization Header Credential",
+        severity=Severity.HIGH,
+        category=FindingCategory.SECRET_EXPOSURE,
+        recommendation="Revoke the token and inject the Authorization header from a secret at runtime.",
+        compliance=["NIST IA-5", "SOC2 CC6.7"],
+        validation=_not_placeholder,
+        generic=True,
+    ),
+    Pattern(
+        name="URL_QUERY_SECRET",
+        pattern=r"(?i)[?&](?:access_token|auth_token|api_key|apikey|token|key|secret|client_secret|password|passwd|signature)=([A-Za-z0-9_\-.~%+/]{16,})",
+        description="Secret Passed in a URL Query Parameter",
+        severity=Severity.MEDIUM,
+        category=FindingCategory.SECRET_EXPOSURE,
+        recommendation="Rotate the value and send it in a header instead — URLs are logged by proxies, servers and browsers.",
+        compliance=["NIST IA-5", "SOC2 CC6.7"],
+        validation=_not_placeholder,
+        generic=True,
+    ),
+]
 
 # Specific rules run first so that generic rules can yield to them.
 _PATTERNS.sort(key=lambda p: p.generic)
@@ -612,8 +642,12 @@ class SecretScanner:
                 # not be gated here, otherwise those rules never fire.
                 ent = calculate_entropy(matched)
                 effective_severity = pattern.severity
+                # Shannon entropy cannot exceed log2(length): a random 24-character
+                # key tops out near 4.5, so a fixed 4.5 threshold silently dropped
+                # most real 20-32 character keys. The floor now scales with length.
+                floor = min(self._min_entropy, 0.85 * math.log2(max(len(matched), 2)))
                 if (
-                    ent < self._min_entropy
+                    ent < floor
                     and pattern.severity in (Severity.MEDIUM, Severity.LOW)
                     and pattern.category != FindingCategory.PII_EXPOSURE
                     and not pattern.structured

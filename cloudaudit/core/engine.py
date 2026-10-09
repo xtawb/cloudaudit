@@ -33,27 +33,27 @@ from cloudaudit.core.models import (
 from cloudaudit.intelligence.image_meta import ImageMetaAnalyser
 from cloudaudit.intelligence.risk_scorer import RiskScorer
 from cloudaudit.intelligence.advanced import (
-    EntropyHunter, SecretDeduplicator, ExposureMapper,
+    SecretDeduplicator, ExposureMapper,
     MisconfigAnalyzer, MisconfigFinding,
 )
 from cloudaudit.ai.providers import ProviderChain, build_provider_chain, scrub_secrets
+from cloudaudit.core.pipeline import ContentAnalyzer
 from cloudaudit.intelligence.local_ai import (
-    LocalIntelligence, aggregate_findings, correlate_findings, is_credential_finding,
-    is_noise_file, rank_files,
+    LocalIntelligence, aggregate_findings, correlate_findings, rank_files,
 )
+from cloudaudit.scanners import document_extractor
 from cloudaudit.ai.analyzer import AIFileAnalyzer, AnomalyScorer
 from cloudaudit.core import checkpoint as checkpoint_mod
 from cloudaudit.core.constants import CHECKPOINT_SAVE_INTERVAL
 from cloudaudit.intelligence.baseline import apply_baseline, load_baseline
-from cloudaudit.intelligence.terraform_scanner import TerraformStateScanner
 from cloudaudit.reports.generator import ReportGenerator
 from cloudaudit.scanners.archive_extractor import ArchiveExtractor
 from cloudaudit.scanners.container_detector import ContainerDetector
 from cloudaudit.scanners.crawler import FileCrawler
 from cloudaudit.scanners.file_classifier import FileClassifier
-from cloudaudit.scanners.plugin_loader import discover_plugins, run_plugins
-from cloudaudit.scanners.secret_scanner import SecretScanner, load_custom_patterns
-from cloudaudit.utils.helpers import human_size, url_filename
+from cloudaudit.scanners.plugin_loader import discover_plugins
+from cloudaudit.scanners.secret_scanner import load_custom_patterns
+from cloudaudit.utils.helpers import human_size, redact, url_filename
 from cloudaudit.utils.http_client import HTTPClient
 
 logger = logging.getLogger("cloudaudit.engine")
@@ -78,24 +78,27 @@ class AuditEngine:
         custom_patterns = []
         if config.custom_patterns_path:
             custom_patterns = load_custom_patterns(config.custom_patterns_path)
-        self._secret    = SecretScanner(min_entropy=config.min_entropy, custom_patterns=custom_patterns)
-        self._terraform = TerraformStateScanner()
 
-        self._entropy   = EntropyHunter()
+        # Third-party scanner plugins (cloudaudit.scanners entry point group, v1.2.0)
+        self._plugins = discover_plugins()
+
+        # One pipeline for every source of content: objects, archive members,
+        # extracted document text (v1.4.0 — see core/pipeline.py).
+        self._analyzer  = ContentAnalyzer(
+            min_entropy=config.min_entropy, custom_patterns=custom_patterns, plugins=self._plugins,
+        )
+        self._secret    = self._analyzer.secret
+        self._local     = self._analyzer.local    # offline semantic engine — always on
         self._archive   = ArchiveExtractor()
         self._image     = ImageMetaAnalyser()
         self._scorer    = RiskScorer()
         self._deduper   = SecretDeduplicator()
         self._mapper    = ExposureMapper()
         self._misconfig = MisconfigAnalyzer()
-        self._local     = LocalIntelligence()     # offline semantic engine — always on
         self._ai_init_note = ""
         self._provider_chain: Optional[ProviderChain] = None
         self._ai_analyzer: Optional[AIFileAnalyzer] = None
         self._anomaly: Optional[AnomalyScorer] = None
-
-        # Third-party scanner plugins (cloudaudit.scanners entry point group, v1.2.0)
-        self._plugins = discover_plugins()
 
         self._resumed_analysed_urls: set[str] = set()
         self._analysed_urls: set[str] = set()
@@ -128,8 +131,11 @@ class AuditEngine:
             self._resumed_analysed_urls = resumed["analysed_urls"]
 
         async with HTTPClient(self._config) as http:
+            inventory_files: Optional[List[ExposedFile]] = None
             if resumed and resumed["container"]:
                 container = resumed["container"]
+            elif self._config.aws_inventory:
+                container, inventory_files = await self._phase_aws_inventory(http)
             else:
                 container = await self._phase_detect(http)
             self._stats.container_info = container
@@ -138,6 +144,8 @@ class AuditEngine:
             if resumed and resumed["crawl_complete"]:
                 exposed_files = resumed["exposed_files"]
                 self._crawler.seed(exposed_files)
+            elif inventory_files is not None:
+                exposed_files = inventory_files
             else:
                 exposed_files = await self._phase_crawl(http, container)
             self._stats.total_files   = len(exposed_files)
@@ -360,6 +368,109 @@ class AuditEngine:
         )
         return container
 
+    # ── Phase 1b: Owner-side S3 inventory (--aws-inventory) ──────────────────
+
+    async def _phase_aws_inventory(self, http: HTTPClient):
+        """
+        List the bucket with the owner's AWS credentials, then find out which
+        objects an anonymous client can actually read. Only those are returned
+        for content analysis; private objects are counted and left alone.
+        """
+        from cloudaudit.intelligence import aws_inventory as inv
+
+        parsed = inv.parse_bucket(self._config.url)
+        if not parsed:
+            raise AuditError(
+                "--aws-inventory needs an S3 bucket: s3://bucket[/prefix] or an *.amazonaws.com bucket URL."
+            )
+        bucket, prefix, _ = parsed
+        loop = asyncio.get_running_loop()
+        inventory = await loop.run_in_executor(
+            None, inv.list_bucket, bucket, prefix, self._config.aws_inventory_max
+        )
+        base = inv.bucket_url(bucket, inventory.region)
+        logger.info("AWS inventory: %d object(s) listed in s3://%s (%s)",
+                    len(inventory.objects), bucket, inventory.region)
+
+        # Can the bucket be listed without credentials at all?
+        listable = False
+        try:
+            resp = await http.get(base)
+            body = await resp.text(errors="replace")
+            listable = resp.status == 200 and "<ListBucketResult" in body
+        except Exception as exc:
+            logger.debug("Anonymous listing probe failed: %s", exc)
+
+        candidates: List[ExposedFile] = []
+        for obj in inventory.objects:
+            ef = ExposedFile(
+                url=inv.object_url(bucket, inventory.region, obj["key"]),
+                key=obj["key"],
+                size_bytes=obj["size"],
+                last_modified=obj["last_modified"],
+                file_type=FileClassifier.classify(obj["key"]),
+                etag=obj["etag"],
+            )
+            candidates.append(ef)
+
+        sem = asyncio.Semaphore(self._config.max_concurrent)
+
+        async def is_public(ef: ExposedFile) -> bool:
+            async with sem:
+                try:
+                    resp = await http.head(ef.url)
+                    status = resp.status
+                    resp.release()
+                    return status == 200
+                except Exception:
+                    return False
+
+        flags = await asyncio.gather(*(is_public(ef) for ef in candidates))
+        public = [ef for ef, ok in zip(candidates, flags) if ok]
+        private_count = len(candidates) - len(public)
+
+        notes = [
+            f"Owner-side inventory: {len(public)} of {len(candidates)} listed object(s) are anonymously readable"
+            + (f" (listing capped at {self._config.aws_inventory_max})" if inventory.truncated else ""),
+            "Bucket listing is PUBLIC" if listable else "Bucket listing is not public (objects found via authenticated inventory)",
+        ]
+        container = ContainerInfo(
+            raw_url=self._config.url,
+            container_type=ContainerType.AWS_S3,
+            container_name=bucket,
+            region=inventory.region,
+            is_public=listable,
+            notes=notes,
+        )
+        logger.info("AWS inventory: %d public, %d private", len(public), private_count)
+
+        if public and not listable:
+            examples = ", ".join(ef.key for ef in public[:5]) + ("…" if len(public) > 5 else "")
+            self._stats.findings.append(Finding(
+                file_url=base,
+                file_name=bucket,
+                file_type=FileType.OTHER,
+                category=FindingCategory.PUBLIC_ACCESS,
+                rule_name="PUBLIC_OBJECTS_IN_UNLISTED_BUCKET",
+                description=(
+                    f"{len(public)} of {len(candidates)} object(s) are publicly readable although the bucket "
+                    f"cannot be listed anonymously — anyone holding the URL can read them ({examples})"
+                ),
+                severity=Severity.HIGH,
+                match=f"[{len(public)} public object(s)]",
+                recommendation=(
+                    "Enable S3 Block Public Access on the bucket, remove public object ACLs "
+                    "(or bucket-policy statements granting s3:GetObject to *), and serve intentionally "
+                    "public assets through CloudFront with origin access control."
+                ),
+                compliance_refs=["CIS 2.1", "NIST AC-3", "SOC2 CC6.1"],
+                confidence=0.97,
+                scanner="AwsInventory",
+            ))
+
+        # Scope filters (--extensions / --ignore-paths / size) apply to what gets analysed.
+        return container, [ef for ef in public if self._crawler._should_include(ef)]
+
     # ── Phase 2: Crawl ────────────────────────────────────────────────────────
 
     async def _phase_crawl(
@@ -461,6 +572,11 @@ class AuditEngine:
                     await self._handle_archive(http, ef)
                     return
 
+                # Office documents / PDFs: extract the text, then analyse it normally
+                if ft == FileType.DOCUMENT and self._config.scan_documents:
+                    await self._handle_document(http, ef)
+                    return
+
                 if not FileClassifier.is_text_analysable(ft):
                     self._stats.skipped_files += 1
                     return
@@ -482,34 +598,8 @@ class AuditEngine:
 
                 content = await resp.text(errors="replace")
 
-                # Deterministic secret scanning
-                det_findings = self._secret.scan(content, ef.url, ft)
-
-                # Dedicated Terraform state scanner — walks resources[].instances[].attributes
-                # structurally instead of relying only on generic regex/entropy matching.
-                if ft == FileType.TERRAFORM and url_filename(ef.url).lower().endswith(
-                    (".tfstate", ".tfstate.backup")
-                ):
-                    tf_findings = self._terraform.scan(content, ef.url)
-                    for tf in tf_findings:
-                        self._deduper.register(tf)
-                    det_findings.extend(tf_findings)
-
-                # Third-party scanner plugins (cloudaudit.scanners entry points)
-                if self._plugins:
-                    file_meta = {"url": ef.url, "file_name": url_filename(ef.url), "file_type": ft}
-                    plugin_findings = run_plugins(self._plugins, content, file_meta)
-                    for pf in plugin_findings:
-                        self._deduper.register(pf)
-                    det_findings.extend(plugin_findings)
-
-                # Local intelligence: semantic key/value analysis, config audit,
-                # JWT inspection. Offline, always on — no API key involved.
-                det_findings.extend(self._local.analyse_file(content, ef.url, ft, det_findings))
-
-                # Entropy analysis, filtered by the statistical token classifier so
-                # hashes, UUIDs, identifiers and lockfile noise are not reported.
-                det_findings.extend(self._entropy_findings(content, ef.url, ft, det_findings))
+                # Rules, Terraform state, plugins, local intelligence, classified entropy
+                det_findings = self._analyzer.analyse(content, ef.url, ft)
 
                 # Register for deduplication
                 for f in det_findings:
@@ -548,40 +638,53 @@ class AuditEngine:
                 self._stats.errors.append(f"Error: {ef.url} — {exc}")
                 logger.debug("Error analysing %s: %s", ef.url, exc)
 
-    def _entropy_findings(
-        self, content: str, url: str, ft: FileType, existing: List[Finding]
-    ) -> List[Finding]:
-        if is_noise_file(url):
-            return []
-        taken = {f.line_number for f in existing if f.line_number and is_credential_finding(f)}
-        out: List[Finding] = []
-        for hit in self._entropy.scan(
-            content, threshold=self._config.min_entropy, classifier=self._local.classifier
-        ):
-            if hit.line_number in taken:
-                continue
-            strong = hit.score >= 0.8
-            out.append(Finding(
-                file_url=url,
-                file_name=url_filename(url),
-                file_type=ft,
-                category=FindingCategory.SECRET_EXPOSURE,
-                rule_name="HIGH_ENTROPY_STRING",
-                description=(
-                    f"High-entropy string detected (entropy={hit.entropy:.2f}, "
-                    f"secret-likelihood {hit.score:.0%}) — possible undiscovered secret"
-                ),
-                severity=Severity.MEDIUM if strong else Severity.LOW,
-                match=hit.value,
-                context=hit.context,
-                line_number=hit.line_number,
-                recommendation="Review this string — high entropy may indicate an undocumented credential or key.",
-                compliance_refs=["NIST IA-5"],
-                confidence=round(min(0.35 + 0.5 * hit.score, 0.85), 3),
-                scanner="EntropyHunter",
-                value_hash=hit.value_hash,
-            ))
-        return out
+    async def _handle_document(self, http: HTTPClient, ef: ExposedFile) -> None:
+        """Download a document, extract its text, and run the normal pipeline over it."""
+        try:
+            raw = await http.download_bytes(ef.url, self._config.max_file_size)
+        except Exception as exc:
+            self._stats.skipped_files += 1
+            logger.debug("Document download skipped %s: %s", ef.url, exc)
+            return
+
+        loop = asyncio.get_running_loop()
+        doc = await loop.run_in_executor(None, document_extractor.extract_text, raw, ef.key)
+        if not doc.ok and not doc.metadata:
+            self._stats.skipped_files += 1
+            return
+
+        findings = self._analyzer.analyse(doc.text, ef.url, FileType.DOCUMENT) if doc.ok else []
+        for f in findings:
+            # Line numbers refer to the extracted text, not to anything a reader
+            # of the original document could navigate to.
+            f.line_number = None
+            if "[extracted" not in f.description:
+                f.description += f" [extracted document text: {doc.method}]"
+            self._deduper.register(f)
+
+        if self._config.deep_metadata:
+            people = {k: v for k, v in doc.metadata.items()
+                      if k in ("creator", "author", "last_modified_by", "company", "manager", "initial_creator") and v}
+            if people:
+                findings.append(Finding(
+                    file_url=ef.url,
+                    file_name=url_filename(ef.url),
+                    file_type=FileType.DOCUMENT,
+                    category=FindingCategory.METADATA_LEAKAGE,
+                    rule_name="DOCUMENT_AUTHOR_METADATA",
+                    description="Document metadata discloses: " + ", ".join(sorted(people)),
+                    severity=Severity.LOW,
+                    match=redact(next(iter(people.values())), keep_chars=3),
+                    recommendation="Strip document properties before publishing (Inspect Document / exiftool -all=).",
+                    compliance_refs=["SOC2 CC6.7"],
+                    confidence=0.9,
+                    scanner="DocumentExtractor",
+                ))
+
+        self._stats.findings.extend(findings)
+        self._stats.scanned_files += 1
+        if findings:
+            logger.info("[!] %s — %d finding(s) in document text", ef.key, len(findings))
 
     async def _handle_image(self, http: HTTPClient, ef: ExposedFile) -> None:
         try:
@@ -607,8 +710,7 @@ class AuditEngine:
 
                 ft       = FileClassifier.classify(rel_path)
                 member_url = f"{ef.url}!/{rel_path}"
-                findings = self._secret.scan(text, member_url, ft)
-                findings.extend(self._local.analyse_file(text, member_url, ft, findings))
+                findings = self._analyzer.analyse(text, member_url, ft)
                 for f in findings:
                     f.from_archive = True
                     f.archive_path = rel_path

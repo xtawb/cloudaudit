@@ -70,3 +70,25 @@ cloudaudit -u https://mybucket.s3.amazonaws.com/ --confirm-ownership \
 No special environment configuration is required for basic operation. See
 [Configuration](configuration.md) for AI provider setup, environment
 variables, and named CLI profiles.
+
+## Optional extras (v1.4.0)
+
+The core install has five dependencies (`aiohttp`, `Pillow`, `cryptography`,
+`pyyaml`, `rich`) and needs no system libraries. `python-magic`, `aiofiles`
+and `jinja2` were listed in earlier versions but never used; `python-magic`
+in particular failed to install on Windows without `libmagic`.
+
+| Extra | Adds | Needed for |
+|-------|------|------------|
+| `cloudaudit[gemini]` / `[openai]` / `[deepseek]` / `[claude]` | provider SDK | an external AI provider (optional — the offline engine needs none) |
+| `cloudaudit[aws]` | `boto3` | `--aws-acl-check`, `--aws-inventory` |
+| `cloudaudit[documents]` | `pypdf` | better PDF text extraction (a built-in extractor is used otherwise) |
+| `cloudaudit[pdf]` | `xhtml2pdf` | `--format pdf` report output |
+| `cloudaudit[all]` | everything above | |
+
+After installing, verify with:
+
+```bash
+cloudaudit selftest
+cloudaudit benchmark
+```

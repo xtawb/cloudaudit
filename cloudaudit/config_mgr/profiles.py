@@ -36,7 +36,7 @@ logger = logging.getLogger("cloudaudit.profiles")
 # Flags that must never be written to a profile file, either because they are
 # secrets, or because they are meaningless outside a single invocation.
 EXCLUDED_KEYS = {
-    "subcommand", "api_key", "set_api", "list_providers", "remove_api", "test_api", "no_ai",
+    "subcommand", "api_key", "set_api", "list_providers", "remove_api", "test_api", "no_ai", "json", "min_precision", "min_recall", "seed",
     "save_profile", "profile", "old_report", "new_report", "limit",
     "url", "targets_file", "scan_docker_image", "confirm_ownership",
     "org_name", "output", "resume", "checkpoint",

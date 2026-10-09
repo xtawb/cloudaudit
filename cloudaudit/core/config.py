@@ -97,10 +97,16 @@ class AuditConfig:
     fail_on_severity:     Optional[str] = None   # --fail-on-severity {low,medium,high,critical}
     record_history:       bool = True            # scan history is recorded unless disabled
 
+    # ── v1.4.0 feature flags ──────────────────────────────────────────────────
+    scan_documents:       bool = True            # extract + analyse text of PDF / Office documents
+    aws_inventory:        bool = False           # --aws-inventory (owner-side S3 listing via boto3)
+    aws_inventory_max:    int = 5000             # --aws-inventory-max (objects listed per run)
+
     def validate(self) -> None:
         if not self.url:
             raise ConfigError("Target URL is required.")
-        if not self.url.startswith(("http://", "https://")):
+        allowed = ("http://", "https://", "s3://") if self.aws_inventory else ("http://", "https://")
+        if not self.url.startswith(allowed):
             raise ConfigError(f"URL must start with http:// or https://: {self.url!r}")
         if not self.ownership_confirmed:
             raise ConfigError(

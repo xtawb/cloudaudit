@@ -83,6 +83,21 @@ _TEMPLATE_RE = re.compile(
         |op://|sm://|projects/|secretsmanager|keyvault|sops:|enc\[)
     """
 )
+# Values that are code, not data: a call, a subscript, an instance attribute,
+# a shell substitution. `SECRET_KEY = get_random_secret_key()` is not a secret.
+_CODE_REFERENCE_RE = re.compile(
+    r"""(?x)
+      ^[A-Za-z_][\w.]*\s*\(.*\)\s*;?$        # get_secret(), os.getenv("X")
+    | ^[A-Za-z_][\w.]*\[[^\]]*\]$            # env["X"], argv[1]
+    | ^(?:self|this|cls|ctx|req|request|props|args|opts|options|config|settings|params)\.[\w.]+$
+    | ^`.*`$
+    """
+)
+# "s3cr3t", "p@ssw0rd", "t0k3n": placeholder words in leetspeak.
+_LEET_TABLES = (
+    str.maketrans({"0": "o", "1": "i", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"}),
+    str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "@": "a", "$": "s"}),
+)
 _PLACEHOLDER_SUBSTRINGS = (
     "example", "placeholder", "changeme", "change_me", "dummy", "redacted",
     "your_", "your-", "<your", "xxxxx", "*****",
@@ -106,6 +121,13 @@ def looks_like_placeholder(value: str) -> bool:
         return True
     if _FILLER_RE.match(v) or _PLACEHOLDER_RE.match(v) or _TEMPLATE_RE.search(v):
         return True
+    if _CODE_REFERENCE_RE.match(v):
+        return True
+    if len(v) <= 24 and any(c in "013457@$" for c in v):
+        for table in _LEET_TABLES:
+            plain = low.translate(table)
+            if _PLACEHOLDER_RE.match(plain) or _FILLER_RE.match(plain):
+                return True
     if any(s in low for s in _PLACEHOLDER_SUBSTRINGS):
         return True
     if len(v) >= 4 and len(set(low)) <= 2:
@@ -120,7 +142,7 @@ _BENIGN_FORMATS: List[Tuple[str, "re.Pattern[str]", bool]] = [
     ("uuid",      re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"), False),
     ("integrity", re.compile(r"^(?:sha(?:1|256|384|512)|md5)[-:=]", re.I), False),
     ("number",    re.compile(r"^[+-]?[\d.,_]+(?:e[+-]?\d+)?[a-zA-Z%]{0,3}$"), False),
-    ("version",   re.compile(r"^[v^~<>=]*\d+(?:\.\d+){1,3}(?:[-+.][\w.]+)?$"), False),
+    ("version",   re.compile(r"^[v^~<>=]*\d+(?:\.\d+){1,3}(?:[-+.][\w.]+)*$"), False),
     ("datetime",  re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?$"), False),
     ("url",       re.compile(r"^(?:[a-z][a-z0-9+.\-]*:)?//[^\s:@/]+(?::\d+)?(?:[/?#]\S*)?$", re.I), False),
     ("email",     re.compile(r"^[\w.%+\-]+@[\w.\-]+\.[A-Za-z]{2,}$"), False),
@@ -129,6 +151,18 @@ _BENIGN_FORMATS: List[Tuple[str, "re.Pattern[str]", bool]] = [
     ("ip",        re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:/\d+)?$"), False),
     ("arn",       re.compile(r"^arn:[\w\-]+:", re.I), False),
     ("constant",  re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$"), False),
+    # Public by design: publishable keys, analytics ids, Sentry DSNs, SSH *public* keys.
+    ("public_id", re.compile(r"^(?:pk_(?:live|test)_[A-Za-z0-9]{8,}|G-[A-Z0-9]{6,}|UA-\d+-\d+|GTM-[A-Z0-9]+)$"), False),
+    ("sentry_dsn", re.compile(r"^(?:https?:)?//[0-9a-f]{32}@[\w.\-]*sentry[\w.\-]*/\d+$", re.I), False),
+    ("ssh_public_key", re.compile(r"^AAAA(?:B3NzaC1|C3NzaC1|E2VjZHNh)[A-Za-z0-9+/=]+$"), False),
+    # Public blockchain addresses (Bitcoin legacy / bech32, Ethereum).
+    ("crypto_address", re.compile(r"^(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[a-z0-9]{20,60}|0x[0-9a-fA-F]{40})$"), False),
+    # A file reference — content-hashed bundle names (chunk.3f2a9c1b7d.js) are not secrets.
+    ("asset_path", re.compile(
+        r"^(?:[A-Za-z]:)?[\w.\-@~/\\]*\.(?:js|mjs|cjs|css|map|json|html?|png|jpe?g|gif|svg|ico|webp|woff2?|ttf|eot"
+        r"|gz|zip|tgz|tar|txt|md|pdf|xml|ya?ml|py|rb|go|ts|tsx|jsx|wasm|log|csv)$", re.I), False),
+    # A route / object path ending in a hex or UUID identifier: /obj/5f2a…, users/<uuid>/avatar
+    ("route_id", re.compile(r"^/?(?:[A-Za-z][\w\-]{0,30}/)+[0-9a-fA-F\-]{8,64}(?:/[\w.\-]*)?$"), False),
     ("mime",      re.compile(r"^[a-z]+/[\w.+\-]+$"), True),
     ("path",      re.compile(r"^(?:[A-Za-z]:)?[./\\~]*(?:[\w.\-@]+[/\\])+[\w.\-@]*$"), True),
     ("dotted",    re.compile(r"^[A-Za-z_][\w\-]*(?:\.[A-Za-z_][\w\-]*){1,}$"), True),
@@ -229,7 +263,7 @@ def randomness_score(token: str) -> float:
 
 @dataclass
 class TokenVerdict:
-    label:   str            # "secret" | "uncertain" | "benign" | "placeholder"
+    label:   str            # "secret" | "uncertain" | "weak" | "benign" | "placeholder"
     score:   float          # 0..1 likelihood of being a real secret
     reasons: List[str] = field(default_factory=list)
 
@@ -252,12 +286,15 @@ class TokenClassifier:
             return TokenVerdict("placeholder", 0.02, ["placeholder/template value"])
 
         strength = key_sensitivity(key_hint) if key_hint else 0
+        if strength < 0:
+            # public_key, token_url, secret_name, key_id …: the value's role is not "a secret".
+            return TokenVerdict("benign", 0.05, ["key name indicates a reference / metadata / public value"])
         if " " in tok and strength < 2:
             return TokenVerdict("benign", 0.05, ["contains whitespace — prose, not a token"])
 
         words = wordiness(tok)
-        if _HEX_HASH_RE.match(tok) and strength == 0:
-            return TokenVerdict("benign", 0.15, ["hex digest shape with no secret-bearing key name"])
+        if strength == 0 and (_HEX_HASH_RE.match(tok) or re.fullmatch(r"[0-9a-fA-F]{16,}", tok)):
+            return TokenVerdict("benign", 0.15, ["hex identifier / digest with no secret-bearing key name"])
         for name, rx, needs_words in _BENIGN_FORMATS:
             if rx.match(tok) and (not needs_words or words >= 0.45):
                 return TokenVerdict("benign", 0.05, [f"benign format: {name}"])
@@ -278,9 +315,6 @@ class TokenClassifier:
         elif strength == 1:
             score += 0.10
             reasons.append("weak secret-bearing key name")
-        elif strength < 0:
-            score -= 0.30
-            reasons.append("key name indicates a reference/metadata, not a value")
 
         score = round(max(0.0, min(1.0, score)), 3)
         if score >= self.SECRET_THRESHOLD:
@@ -288,7 +322,9 @@ class TokenClassifier:
         elif score >= self.UNCERTAIN_THRESHOLD:
             label = "uncertain"
         else:
-            label = "benign"
+            # Not a recognised benign shape — just not random-looking. Under a
+            # strong secret-bearing key this can still be a (weak) credential.
+            label = "weak"
         return TokenVerdict(label, score, reasons)
 
 
@@ -300,7 +336,8 @@ _STRONG_KEY_RE = re.compile(
     r"(?:^|_)(?:pass(?:word|wd|phrase)?|pwd|secret|secrets|token|api_?key|apikey|auth_?key|"
     r"auth_?token|credentials?|private_?key|priv_?key|access_?key|secret_?key|client_?secret|"
     r"app_?secret|signing_?key|sign_?key|encryption_?key|enc_?key|master_?key|session_?key|"
-    r"license_?key|consumer_?secret|shared_?key|account_?key|storage_?key|sas_?token)(?:_|$|\d)"
+    r"license_?key|consumer_?secret|shared_?key|account_?key|storage_?key|sas_?token|"
+    r"authorization|bearer_?token|x_api_key)(?:_|$|\d)"
 )
 _WEAK_KEY_RE = re.compile(r"(?:^|_)(?:key|auth|salt|jwt|oauth|bearer|sas|cred|otp|pin|seed|nonce)(?:_|$|\d)")
 _NEGATIVE_KEY_RE = re.compile(
@@ -314,6 +351,7 @@ _NEGATIVE_KEY_RE = re.compile(
     | token_(?:type|url|uri|endpoint|expir\w*|ttl|limit|count|name|file|path|length|len|budget
               |usage|lifetime|header|prefix|kind|auth_method)
     | (?:max|min|num|total|input|output|prompt|completion)_tokens? | tokeniz
+    | (?:^|_)(?:next|prev|previous|page|continuation|pagination|sync|cursor|csrf|xsrf|nonce)_?(?:page_?)?token
     | pass(?:word)?_(?:policy|length|len|min\w*|max\w*|field|hint|reset\w*|expir\w*|file|path
               |prompt|url|regex|pattern|strength|age|history|required|enabled|change\w*
               |confirm\w*|label|placeholder|input|type|attempts|complexity|hash\w*|encoder|salt)
@@ -371,6 +409,9 @@ _XML_KV_RE   = re.compile(
     r"""(?:key|name)\s*=\s*["'](?P<key>[\w.\-:]{2,80})["']\s+(?:value|connectionString)\s*=\s*["'](?P<val>[^"'\n]{1,512})["']""",
     re.IGNORECASE,
 )
+
+
+_AUTH_SCHEME_RE = re.compile(r"^(?:Bearer|Token|Basic|ApiKey|Digest)\s+", re.IGNORECASE)
 
 
 @dataclass
@@ -582,6 +623,27 @@ _CONFIG_RULES: Tuple[ConfigRule, ...] = (
         path_hint=r"(?:^|/)\.?(?:npmrc|pypirc|yarnrc(?:\.yml)?|gemrc)$",
     ),
     ConfigRule(
+        "PLAINTEXT_SECURESTRING",
+        r"ConvertTo-SecureString[ \t]+(?:-String[ \t]+)?[\"'](?!\$)[^\"'\n]{6,}[\"'][ \t]+-AsPlainText",
+        Severity.HIGH,
+        "PowerShell script converts a hardcoded plain-text password to a SecureString",
+        "Rotate the password and read it from a vault (SecretManagement module) or a protected prompt instead.",
+        ("NIST IA-5", "CIS 2.1.5"),
+        FindingCategory.SECRET_EXPOSURE,
+        sensitive=True,
+    ),
+    ConfigRule(
+        "JWK_PRIVATE_KEY",
+        r"\"kty\"\s*:\s*\"(?:RSA|EC|OKP|oct)\"[^{}]*?\"(?:d|k)\"\s*:\s*\"[A-Za-z0-9_\-]{16,}\""
+        r"|\"(?:d|k)\"\s*:\s*\"[A-Za-z0-9_\-]{16,}\"[^{}]*?\"kty\"\s*:\s*\"(?:RSA|EC|OKP|oct)\"",
+        Severity.CRITICAL,
+        "JSON Web Key containing private key material (\"d\" / \"k\" parameter)",
+        "Rotate the key pair and publish only the public parameters. Private JWKs belong in a KMS or secrets manager.",
+        ("NIST IA-5", "NIST SC-12", "SOC2 CC6.1"),
+        FindingCategory.CREDENTIAL_FILE,
+        sensitive=True,
+    ),
+    ConfigRule(
         "KUBERNETES_SECRET_MANIFEST",
         r"^kind:\s*Secret\b",
         Severity.HIGH,
@@ -672,8 +734,9 @@ _CONFIG_RULES: Tuple[ConfigRule, ...] = (
     ),
     ConfigRule(
         "SHELL_HISTORY_SECRET",
-        r"^(?:.*\s)?(?:mysql|psql|mongo(?:sh)?|redis-cli|sshpass|curl|wget|aws|az|gcloud|docker\s+login)\b[^\n]*"
-        r"(?:\s-p\s?\S{4,}|--password[= ]\S{4,}|-u\s+\S+:\S{4,}|--token[= ]\S{8,}|PGPASSWORD=\S{4,})",
+        r"^(?:[^\n]*[ \t])?(?:mysql|psql|mongo(?:sh)?|redis-cli|sshpass|curl|wget|aws|az|gcloud|docker[ \t]+login)\b[^\n]*"
+        r"(?:[ \t]-p[ \t]?['\"]?(?!\$)[^\s'\"]{4,}|--password[= ]['\"]?(?!\$)[^\s'\"]{4,}|-u[ \t]+\S+:(?!\$)\S{4,}"
+        r"|--token[= ]['\"]?(?!\$)[^\s'\"]{8,}|PGPASSWORD=(?!\$)\S{4,})",
         Severity.HIGH,
         "Command line containing an inline credential (shell history / script)",
         "Rotate the credential. Pass secrets through environment files or prompts, never on the command line.",
@@ -783,7 +846,7 @@ def inspect_jwt(token: str, now: Optional[float] = None) -> Optional[Dict[str, A
 
 _NON_PROD_PATH_RE = re.compile(
     r"(?:^|[/\\!])(?:tests?|__tests__|spec|specs|fixtures?|mocks?|__mocks__|examples?|samples?|demo|"
-    r"docs?|documentation|testdata|test-data|stubs?)(?:[/\\]|$)"
+    r"testdata|test-data|stubs?)(?:[/\\]|$)"
     r"|\.(?:example|sample|template|dist|tmpl|tpl)(?:\.\w+)?$|(?:^|[/\\])(?:readme|changelog|contributing)[\w.\-]*$"
     r"|[._\-](?:test|spec|example|sample)\.\w+$|\.(?:md|rst|adoc)$",
     re.IGNORECASE,
@@ -809,8 +872,19 @@ _NON_CREDENTIAL_RULES = frozenset({
 })
 
 
+# A docs/ directory holds written documentation — unless the file is an office
+# document or data export, which is real content wherever it is stored.
+_DOCS_DIR_RE = re.compile(r"(?:^|[/\\!])(?:docs?|documentation)[/\\]", re.IGNORECASE)
+_REAL_CONTENT_EXT_RE = re.compile(
+    r"\.(?:pdf|docx?|docm|xlsx?|xlsm|pptx?|pptm|odt|ods|odp|rtf|csv|sql|env|pem|key|tfstate|tfvars)$", re.IGNORECASE
+)
+
+
 def is_non_production_path(path: str) -> bool:
-    return bool(_NON_PROD_PATH_RE.search(path or ""))
+    path = path or ""
+    if _NON_PROD_PATH_RE.search(path):
+        return True
+    return bool(_DOCS_DIR_RE.search(path)) and not _REAL_CONTENT_EXT_RE.search(path)
 
 
 def is_noise_file(path: str) -> bool:
@@ -899,6 +973,8 @@ class LocalIntelligence:
         covered_lines = {f.line_number for f in existing if f.line_number and is_credential_finding(f)}
         fname = url_filename(file_url)
         is_config = file_type in (FileType.ENVIRONMENT, FileType.CONFIG, FileType.JSON, FileType.TERRAFORM)
+        is_code = file_type in (FileType.PYTHON, FileType.JAVASCRIPT, FileType.TYPESCRIPT, FileType.RUBY,
+                                FileType.PHP, FileType.SHELL)
         out: List[Finding] = []
         seen: set = set()
 
@@ -908,18 +984,31 @@ class LocalIntelligence:
             strength = key_sensitivity(a.key)
             if strength <= 0:
                 continue
-            value = a.value.strip()
+            # "Authorization: Bearer <token>" — judge the credential, not the scheme word.
+            value = _AUTH_SCHEME_RE.sub("", a.value.strip())
             if len(value) < 6 or len(value) > 512:
                 continue
             verdict = self.classifier.classify(value, key_hint=a.key)
             if verdict.label in ("placeholder", "benign"):
                 continue
-            # A bare (unquoted) wordy identifier is a variable reference, not a literal.
             has_digit_or_symbol = bool(re.search(r"[\d!@#$%^&*+=/\\|~?]", value))
-            if not has_digit_or_symbol and wordiness(value) >= 0.45:
+            words = wordiness(value)
+            # Letters only: a UI label, a translation, or an identifier — unless it is random.
+            if not has_digit_or_symbol and (" " in value or not value.isascii() or words >= 0.45):
                 continue
-            if not a.quoted and re.fullmatch(r"[A-Za-z_][\w.]*", value) and wordiness(value) >= 0.6:
+            # A sentence is prose, not a credential (a passphrase key is the exception).
+            if value.count(" ") >= 2 and "passphrase" not in normalise_key(a.key):
                 continue
+            # A bare (unquoted) wordy identifier is a variable reference in source code;
+            # in a config file an unquoted value is a literal (password = hunter42).
+            bare_identifier = not a.quoted and words >= 0.6 and re.fullmatch(r"[A-Za-z_][\w.]*", value)
+            if bare_identifier and (is_code or not re.search(r"\d", value)):
+                continue
+            if verdict.label == "weak":
+                # Low-randomness value: only credible under a strong key, as a literal with
+                # digits/symbols (a human-chosen password), and long enough to matter.
+                if strength < 2 or not has_digit_or_symbol or len(value) < 8:
+                    continue
             if strength == 1 and not verdict.is_secret:
                 continue
 

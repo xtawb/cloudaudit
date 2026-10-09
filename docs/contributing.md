@@ -107,3 +107,34 @@ Follow semantic versioning ([semver.org](https://semver.org)):
 **xtawb** — [https://linktr.ee/xtawb](https://linktr.ee/xtawb)
 
 Repository: [https://github.com/xtawb/cloudaudit](https://github.com/xtawb/cloudaudit)
+
+## Continuous integration (v1.4.0)
+
+`.github/workflows/tests.yml` runs on every push and pull request, on Linux
+and Windows:
+
+```bash
+python -m unittest discover -s tests -t . -v
+cloudaudit selftest
+cloudaudit benchmark --min-precision 0.97 --min-recall 0.95
+```
+
+The benchmark is a regression gate. When you add or change a detection rule:
+
+1. Add the case that motivated it to `intelligence/benchmark.py` — a positive
+   (planted secret) **and**, where it applies, a negative that looks similar.
+2. If you found a false positive in the wild, add it as a negative first, see
+   it fail, then fix the rule.
+3. Never put a credential literal in the repository; assemble synthetic
+   values at runtime as the corpus and the tests do.
+
+## Publishing to PyPI
+
+`.github/workflows/publish.yml` is manual (`workflow_dispatch`) and uses PyPI
+Trusted Publishing — no API token is stored anywhere. One-time setup:
+
+1. Create an account on pypi.org and, under *Publishing*, add a pending
+   publisher: owner `xtawb`, repository `cloudaudit`, workflow `publish.yml`,
+   environment `pypi`.
+2. In the GitHub repository settings, create an environment named `pypi`.
+3. Run the workflow from the *Actions* tab after tagging a release.
